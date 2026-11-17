@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: 'Plus Jakarta Sans', sans-serif;
+  }
+  body {
+    overscroll-behavior: none;
+    background-color: #faf8ff;
+    color: #131b2e;
+  }
+}
+
+/* Material Symbols configuration */
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 20px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 3D Tactile Buttons */
+.btn-tactile-primary {
+  background-color: #3525cd;
+  color: #ffffff;
+  box-shadow: 0 3px 0 0 #1a0f91;
+  transition: all 0.15s ease-in-out;
+}
+.btn-tactile-primary:active {
+  transform: translateY(2px);
+  box-shadow: none;
+}
+
+.btn-tactile-secondary {
+  background-color: #006c49;
+  color: #ffffff;
+  box-shadow: 0 3px 0 0 #00452e;
+  transition: all 0.15s ease-in-out;
+}
+.btn-tactile-secondary:active {
+  transform: translateY(2px);
+  box-shadow: none;
+}
+
+.btn-tactile-surface {
+  background-color: #ffffff;
+  color: #131b2e;
+  box-shadow: 0 3px 0 0 #dae2fd;
+  transition: all 0.15s ease-in-out;
+}
+.btn-tactile-surface:active {
+  transform: translateY(2px);
+  box-shadow: none;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #c7c4d8;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #777587;
+}

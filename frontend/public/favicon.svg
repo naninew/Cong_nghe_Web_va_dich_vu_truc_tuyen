@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="memoraGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4f39f6" />
+      <stop offset="100%" stop-color="#3525cd" />
+    </linearGradient>
+    <linearGradient id="sparkleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00e599" />
+      <stop offset="100%" stop-color="#006c49" />
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded Squircle Background -->
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#memoraGrad)" />
+
+  <!-- Brain & Flashcard Geometric Motif -->
+  <!-- Left hemisphere arc -->
+  <path d="M 23 18 C 17 18 14 23 14 28 C 14 31 16 33 18 34 C 15 36 15 41 18 44 C 21 47 26 46 28 44" 
+        fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+  
+  <!-- Right hemisphere arc -->
+  <path d="M 41 18 C 47 18 50 23 50 28 C 50 31 48 33 46 34 C 49 36 49 41 46 44 C 43 47 38 46 36 44" 
+        fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+
+  <!-- Center Neural Stem -->
+  <line x1="32" y1="21" x2="32" y2="47" stroke="#ffffff" stroke-width="3" stroke-linecap="round" />
+  <circle cx="32" cy="21" r="2.5" fill="#ffffff" />
+  <circle cx="32" cy="34" r="2.5" fill="#ffffff" />
+  <circle cx="32" cy="47" r="2.5" fill="#ffffff" />
+
+  <!-- Connecting Synapse Arcs -->
+  <path d="M 23 28 C 28 28 29 34 32 34" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.9" />
+  <path d="M 41 28 C 36 28 35 34 32 34" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.9" />
+
+  <!-- Brilliant Knowledge Sparkle Star (Top Right) -->
+  <path d="M 47 11 Q 47 16 52 16 Q 47 16 47 21 Q 47 16 42 16 Q 47 16 47 11 Z" fill="url(#sparkleGrad)" stroke="#ffffff" stroke-width="0.8" />
+</svg>
