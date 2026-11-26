@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, or_, case
 
 from ...db.session import get_db
 from ...models.user import User
@@ -146,95 +146,97 @@ async def get_deck_stats(
 
     child_ids = await DeckService.get_deck_and_child_ids(db, user.id, deck_id)
 
-    # 2. Query all cards in deck + subdecks
-    cards_stmt = (
-        select(Card)
-        .options(
-            selectinload(Card.note),
-        )
-        .where(Card.user_id == user.id, Card.deck_id.in_(child_ids))
-    )
-    cards_res = await db.execute(cards_stmt)
-    cards = cards_res.scalars().all()
-    total_cards = len(cards)
+    # 2. Aggregate card counts & stability tiers directly in SQL (fast even for 50,000+ cards)
+    base_filter = and_(Card.user_id == user.id, Card.deck_id.in_(child_ids))
+    is_studied = or_(Card.reps > 0, Card.queue.in_([1, 2, 3]))
+    ivl_col = func.coalesce(Card.ivl, 0)
 
-    # 3. Status breakdown & progress
-    new_count = 0
-    learning_count = 0
-    review_count = 0
-    relearning_count = 0
-    leech_count = 0
-    starred_count = 0
-    studied_count = 0
+    agg_stmt = select(
+        func.count(Card.id).label("total_cards"),
+        func.sum(case((Card.queue == 0, 1), else_=0)).label("new_count"),
+        func.sum(case((Card.queue.in_([1, 3]), 1), else_=0)).label("learning_count"),
+        func.sum(case((Card.queue == 2, 1), else_=0)).label("review_count"),
+        func.sum(case((and_(Card.queue.in_([1, 3]), Card.lapses > 0), 1), else_=0)).label("relearning_count"),
+        func.sum(case((Card.lapses >= 4, 1), else_=0)).label("leech_count"),
+        func.sum(case((func.coalesce(Card.flags, 0) > 0, 1), else_=0)).label("starred_count"),
+        func.sum(case((is_studied, 1), else_=0)).label("studied_count"),
+        func.sum(case((and_(is_studied, ivl_col < 1), 1), else_=0)).label("tier1"),
+        func.sum(case((and_(is_studied, ivl_col >= 1, ivl_col <= 7), 1), else_=0)).label("tier2"),
+        func.sum(case((and_(is_studied, ivl_col > 7, ivl_col <= 21), 1), else_=0)).label("tier3"),
+        func.sum(case((and_(is_studied, ivl_col > 21, ivl_col <= 60), 1), else_=0)).label("tier4"),
+        func.sum(case((and_(is_studied, ivl_col > 60), 1), else_=0)).label("tier5"),
+    ).where(base_filter)
+
+    agg_row = (await db.execute(agg_stmt)).one()
+
+    total_cards = int(agg_row.total_cards or 0)
+    new_count = int(agg_row.new_count or 0)
+    learning_count = int(agg_row.learning_count or 0)
+    review_count = int(agg_row.review_count or 0)
+    relearning_count = int(agg_row.relearning_count or 0)
+    leech_count = int(agg_row.leech_count or 0)
+    starred_count = int(agg_row.starred_count or 0)
+    studied_count = int(agg_row.studied_count or 0)
 
     tier_counts = {
-        "tier1": 0,  # Mới nhớ (< 1d)
-        "tier2": 0,  # Đang nhớ (1 - 7d)
-        "tier3": 0,  # Khá vững (7 - 21d)
-        "tier4": 0,  # Vững (21 - 60d)
-        "tier5": 0,  # Nhớ lâu (> 60d)
+        "tier1": int(agg_row.tier1 or 0),  # Mới nhớ (< 1d)
+        "tier2": int(agg_row.tier2 or 0),  # Đang nhớ (1 - 7d)
+        "tier3": int(agg_row.tier3 or 0),  # Khá vững (7 - 21d)
+        "tier4": int(agg_row.tier4 or 0),  # Vững (21 - 60d)
+        "tier5": int(agg_row.tier5 or 0),  # Nhớ lâu (> 60d)
     }
+
+    # 3. Fetch only up to 400 studied cards (with notes) for the learned matrix grid
     learned_matrix = []
-
-    for c in cards:
-        c_flags = getattr(c, "flags", 0) or 0
-        if c_flags > 0:
-            starred_count += 1
-        elif c.note and c.note.tags and any("marked" in str(t).lower() or "star" in str(t).lower() for t in c.note.tags):
-            starred_count += 1
-        if c.lapses >= 4:
-            leech_count += 1
-
-        if c.queue == 0:
-            new_count += 1
-        elif c.queue in (1, 3):
-            learning_count += 1
-            if c.lapses > 0:
-                relearning_count += 1
-        elif c.queue == 2:
-            review_count += 1
-
-        if c.reps > 0 or c.queue in (1, 2, 3):
-            studied_count += 1
-            # Determine memory stability tier
+    if studied_count > 0:
+        learned_stmt = (
+            select(Card)
+            .options(selectinload(Card.note))
+            .where(and_(base_filter, is_studied))
+            .limit(400)
+        )
+        learned_cards = (await db.execute(learned_stmt)).scalars().all()
+        for c in learned_cards:
             ivl = c.ivl or 0
             if ivl < 1:
                 tier = 1
-                tier_counts["tier1"] += 1
             elif ivl <= 7:
                 tier = 2
-                tier_counts["tier2"] += 1
             elif ivl <= 21:
                 tier = 3
-                tier_counts["tier3"] += 1
             elif ivl <= 60:
                 tier = 4
-                tier_counts["tier4"] += 1
             else:
                 tier = 5
-                tier_counts["tier5"] += 1
 
-            if len(learned_matrix) < 400:
-                note_field0 = c.note.fields[0] if (c.note and c.note.fields and len(c.note.fields) > 0) else f"Card {c.id}"
-                learned_matrix.append({
-                    "card_id": c.id,
-                    "front_text": _clean_plain_text(note_field0),
-                    "ivl": c.ivl,
-                    "reps": c.reps,
-                    "lapses": c.lapses,
-                    "tier": tier,
-                })
+            note_field0 = (
+                c.note.fields[0]
+                if (c.note and c.note.fields and len(c.note.fields) > 0)
+                else f"Card {c.id}"
+            )
+            learned_matrix.append({
+                "card_id": c.id,
+                "front_text": _clean_plain_text(note_field0),
+                "ivl": c.ivl,
+                "reps": c.reps,
+                "lapses": c.lapses,
+                "tier": tier,
+            })
 
     progress_percent = round((studied_count / max(1, total_cards)) * 100, 1)
 
-    # 4. Review telemetry from Revlog for this deck's cards
-    card_id_list = [c.id for c in cards]
+    # 4. Review telemetry from Revlog via JOIN (avoids SQL IN(...) variable limit)
     total_reviews = 0
     success_reviews = 0
-    if card_id_list:
+    if child_ids:
         rev_stmt = (
             select(Revlog.rating, func.count(Revlog.id))
-            .where(Revlog.user_id == user.id, Revlog.card_id.in_(card_id_list))
+            .join(Card, Revlog.card_id == Card.id)
+            .where(
+                Revlog.user_id == user.id,
+                Card.user_id == user.id,
+                Card.deck_id.in_(child_ids),
+            )
             .group_by(Revlog.rating)
         )
         rev_res = await db.execute(rev_stmt)
@@ -243,7 +245,7 @@ async def get_deck_stats(
         success_reviews = sum(cnt for rating, cnt in rev_rows if rating > 1)
 
     fail_reviews = total_reviews - success_reviews
-    retention_rate = round((success_reviews / max(1, total_reviews)) * 100, 1) if total_reviews > 0 else 92.4
+    retention_rate = round((success_reviews / max(1, total_reviews)) * 100, 1) if total_reviews > 0 else 0.0
     avg_reviews = round(total_reviews / max(1, total_cards), 1)
 
     return {
