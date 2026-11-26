@@ -6,6 +6,7 @@ export interface User {
   role: string;
   xp: number;
   streak_days: number;
+  daily_goal?: number;
 }
 
 export interface DeckCounts {
@@ -135,6 +136,7 @@ export interface QuizFinalResult {
   correct_count: number;
   accuracy_percent: number;
   duration_seconds: number;
+  srs_sync?: boolean;
 }
 
 export interface StatsOverview {
@@ -154,7 +156,7 @@ export interface StatsOverview {
   mature_cards: number;
   learning_cards: number;
   new_cards: number;
-  retention_rate: number;
+  retention_rate: number | null;
 }
 
 export interface DevUser {

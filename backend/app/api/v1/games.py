@@ -2,7 +2,8 @@
 Quiz Game Endpoints: Start quiz session, submit answer, finish session.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...db.session import get_db
@@ -19,6 +20,16 @@ from ...services.game_service import GameService
 from ...core.deps import get_current_user
 
 router = APIRouter(prefix="/games", tags=["games"])
+
+
+@router.get("/fields", response_model=List[str])
+async def get_deck_fields(
+    deck_id: Optional[int] = Query(None),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return distinct available note field names for a deck (or all user decks)."""
+    return await GameService.get_available_fields(db=db, user_id=user.id, deck_id=deck_id)
 
 
 @router.post("/start", response_model=StartGameResponse)
@@ -81,6 +92,23 @@ async def finish_quiz_session(
 ):
     """Finalize quiz game session and compute accuracy score and XP."""
     try:
-        return await GameService.finish_session(db, req.session_id)
+        return await GameService.finish_session(db, req.session_id, user_id=user.id)
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+
+@router.get("/{session_id}", response_model=FinishGameResponse)
+async def get_quiz_session_result(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieve a saved quiz session result by session_id (owner only)."""
+    try:
+        return await GameService.get_session_result(db=db, user_id=user.id, session_id=session_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))

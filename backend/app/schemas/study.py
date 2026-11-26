@@ -147,6 +147,7 @@ class FinishGameResponse(BaseModel):
     correct_count: int
     accuracy_percent: float
     duration_seconds: int
+    srs_sync: bool = True
 
 
 # --- Import/Export Schemas ---

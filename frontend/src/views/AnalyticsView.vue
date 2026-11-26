@@ -22,47 +22,70 @@
       </div>
     </div>
 
+    <!-- Error Banner -->
+    <div
+      v-if="loadError"
+      class="px-4 py-3 rounded-xl bg-red-50 border border-error/30 text-error text-xs font-semibold flex items-center justify-between gap-3"
+    >
+      <div class="flex items-center gap-2">
+        <span class="material-symbols-outlined text-base shrink-0">error</span>
+        <span>{{ loadError }}</span>
+      </div>
+      <button
+        @click="loadAnalyticsData"
+        type="button"
+        class="px-3 py-1 rounded-lg bg-error text-white text-[11px] font-bold hover:opacity-90 transition-opacity shrink-0"
+      >
+        Thử lại
+      </button>
+    </div>
+
     <!-- Analytics Bento Grid -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
       <div class="bg-surface-container-lowest rounded-2xl p-6 border border-outline-variant/20 shadow-sm flex flex-col justify-between">
-        <span class="text-xs font-bold uppercase text-outline">Tỷ Lệ Nhớ Mục Tiêu</span>
+        <span class="text-xs font-bold uppercase text-outline">Tỷ Lệ Nhớ Thực Tế</span>
         <div class="my-4">
-          <span class="text-4xl font-extrabold text-secondary">{{ stats?.retention_rate || 92.4 }}%</span>
+          <span class="text-4xl font-extrabold text-secondary">
+            {{ stats?.retention_rate != null ? `${stats.retention_rate}%` : '—' }}
+          </span>
           <p class="text-xs text-on-surface-variant mt-2">
-            Thuật toán Spaced Repetition đang duy trì tỷ lệ nhớ trên ngưỡng tối ưu 90%.
+            {{ retentionStatus.desc }}
           </p>
         </div>
-        <div class="flex items-center gap-2 text-xs font-semibold text-secondary">
-          <span class="material-symbols-outlined text-base">check_circle</span>
-          <span>Tham số FSRS tối ưu</span>
+        <div class="flex items-center gap-2 text-xs font-semibold" :class="retentionStatus.className">
+          <span class="material-symbols-outlined text-base">{{ retentionStatus.icon }}</span>
+          <span>{{ retentionStatus.label }}</span>
         </div>
       </div>
 
       <div class="bg-surface-container-lowest rounded-2xl p-6 border border-outline-variant/20 shadow-sm flex flex-col justify-between">
         <span class="text-xs font-bold uppercase text-outline">Tổng Thẻ Trong Hệ Thống</span>
         <div class="my-4">
-          <span class="text-4xl font-extrabold text-on-surface">{{ (stats?.total_cards || 0).toLocaleString() }}</span>
+          <span class="text-4xl font-extrabold text-on-surface">{{ (stats?.total_cards ?? 0).toLocaleString() }}</span>
           <p class="text-xs text-on-surface-variant mt-2">
             Tổng số thẻ trong cơ sở dữ liệu đã phân bổ theo từng bộ thẻ và subdeck.
           </p>
         </div>
         <div class="flex items-center gap-2 text-xs font-semibold text-primary">
           <span class="material-symbols-outlined text-base">storage</span>
-          <span>PostgreSQL Multi-Tenant</span>
+          <span>{{ stats?.mature_cards ?? 0 }} đã thuộc · {{ stats?.new_cards ?? 0 }} thẻ mới</span>
         </div>
       </div>
 
       <div class="bg-surface-container-lowest rounded-2xl p-6 border border-outline-variant/20 shadow-sm flex flex-col justify-between">
         <span class="text-xs font-bold uppercase text-outline">Chuỗi Ngày Học Liên Tục</span>
         <div class="my-4">
-          <span class="text-4xl font-extrabold text-amber-700">{{ stats?.user.streak_days || 0 }} Ngày</span>
+          <span class="text-4xl font-extrabold text-amber-700">{{ stats?.user.streak_days ?? 0 }} Ngày</span>
           <p class="text-xs text-on-surface-variant mt-2">
-            Số ngày học liên tiếp ghi nhận vào hệ thống telemetry.
+            {{ (stats?.user.streak_days ?? 0) > 0 ? 'Số ngày học liên tiếp ghi nhận vào hệ thống.' : 'Hoàn thành lượt ôn hôm nay để bắt đầu chuỗi ngày học.' }}
           </p>
         </div>
-        <div class="flex items-center gap-2 text-xs font-semibold text-amber-700">
+        <div
+          class="flex items-center gap-2 text-xs font-semibold"
+          :class="(stats?.user.streak_days ?? 0) > 0 ? 'text-amber-700' : 'text-outline'"
+        >
           <span class="material-symbols-outlined text-base">local_fire_department</span>
-          <span>Thói quen học duy trì tốt</span>
+          <span>{{ (stats?.user.streak_days ?? 0) > 0 ? 'Thói quen học duy trì tốt' : 'Chưa có chuỗi ngày học' }}</span>
         </div>
       </div>
     </div>
@@ -79,9 +102,31 @@
         </router-link>
       </div>
 
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+      <!-- Empty State -->
+      <div
+        v-if="!deckStore.isLoading && flatDecks.length === 0"
+        class="py-8 text-center flex flex-col items-center gap-3"
+      >
+        <div class="w-12 h-12 rounded-2xl bg-primary-fixed/40 text-primary flex items-center justify-center">
+          <span class="material-symbols-outlined text-2xl">library_add</span>
+        </div>
+        <div class="flex flex-col gap-1">
+          <h4 class="font-bold text-sm text-on-surface">Chưa có bộ thẻ nào</h4>
+          <p class="text-xs text-on-surface-variant">
+            Hãy tạo bộ thẻ hoặc import file .apkg trong Library để xem thống kê chi tiết.
+          </p>
+        </div>
+        <router-link
+          to="/library"
+          class="px-4 py-2 rounded-xl bg-primary text-on-primary text-xs font-bold hover:bg-primary-container transition-colors"
+        >
+          Đi tới Library
+        </router-link>
+      </div>
+
+      <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         <div
-          v-for="d in flatDecks.slice(0, 9)"
+          v-for="d in flatDecks"
           :key="d.id"
           class="p-4 rounded-xl bg-surface-container-low/40 border border-outline-variant/20 hover:border-primary/40 transition-all flex flex-col justify-between gap-3"
         >
@@ -118,6 +163,41 @@ const router = useRouter();
 const deckStore = useDeckStore();
 const stats = ref<StatsOverview | null>(null);
 const selectedDeckId = ref<number | null>(null);
+const loadError = ref<string | null>(null);
+
+const retentionStatus = computed(() => {
+  const rate = stats.value?.retention_rate;
+  if (rate == null) {
+    return {
+      label: 'Chưa có dữ liệu ôn tập',
+      desc: 'Hãy bắt đầu ôn tập thẻ để hệ thống tính tỷ lệ nhớ trong 30 ngày gần nhất.',
+      icon: 'hourglass_empty',
+      className: 'text-outline',
+    };
+  }
+  if (rate >= 85) {
+    return {
+      label: 'Tham số FSRS tối ưu',
+      desc: 'Thuật toán Spaced Repetition đang duy trì tỷ lệ nhớ ở mức rất tốt.',
+      icon: 'check_circle',
+      className: 'text-secondary',
+    };
+  }
+  if (rate >= 70) {
+    return {
+      label: 'Mức ghi nhớ ổn định',
+      desc: 'Tỷ lệ nhớ trong 30 ngày qua ở mức khá. Duy trì ôn tập đều đặn mỗi ngày.',
+      icon: 'trending_up',
+      className: 'text-amber-700',
+    };
+  }
+  return {
+    label: 'Cần ôn tập thêm',
+    desc: 'Tỷ lệ nhớ đang dưới ngưỡng tối ưu. Bạn nên ôn lại các thẻ hay quên.',
+    icon: 'warning',
+    className: 'text-error',
+  };
+});
 
 const flatDecks = computed(() => {
   const result: Array<{ id: number; name: string; fullName: string; total_cards: number; counts: any }> = [];
@@ -140,20 +220,25 @@ const flatDecks = computed(() => {
   return result;
 });
 
-onMounted(async () => {
-  await Promise.all([
+async function loadAnalyticsData() {
+  loadError.value = null;
+  const results = await Promise.allSettled([
     fetchGlobalStats(),
     deckStore.fetchDecks(),
   ]);
-});
+  const failed = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
+  if (failed) {
+    loadError.value =
+      failed.reason?.response?.data?.detail ||
+      'Không thể tải đầy đủ dữ liệu thống kê. Vui lòng thử lại.';
+  }
+}
+
+onMounted(loadAnalyticsData);
 
 async function fetchGlobalStats() {
-  try {
-    const res = await api.get('/stats/overview');
-    stats.value = res.data;
-  } catch (err) {
-    console.error('Failed to load stats:', err);
-  }
+  const res = await api.get('/stats/overview');
+  stats.value = res.data;
 }
 
 function onDeckSelect() {

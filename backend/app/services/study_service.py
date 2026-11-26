@@ -7,7 +7,7 @@ Implements Anki-compliant Day Rollover (4:00 AM) and Daily Limits (new_per_day, 
 import os
 import re
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -518,7 +518,10 @@ class StudyService:
         user.xp += xp_gain
         today_date = date.today()
         if user.last_study_date != today_date:
-            user.streak_days += 1
+            if user.last_study_date == today_date - timedelta(days=1):
+                user.streak_days += 1
+            else:
+                user.streak_days = 1
             user.last_study_date = today_date
 
         await db.commit()

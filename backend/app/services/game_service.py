@@ -13,7 +13,7 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from sqlalchemy import and_
+from sqlalchemy import and_, func
 
 from ..models.user import User
 from ..models.card import Card, Note
@@ -136,6 +136,43 @@ def _extract_card_info(
 class GameService:
 
     @staticmethod
+    async def get_available_fields(
+        db: AsyncSession,
+        user_id: str,
+        deck_id: Optional[int] = None,
+    ) -> List[str]:
+        """Return distinct available note field names for a deck (or all user decks)."""
+        if deck_id:
+            child_ids = await DeckService.get_deck_and_child_ids(db, user_id, deck_id)
+            nt_stmt = (
+                select(Note.notetype_id)
+                .join(Card, Card.note_id == Note.id)
+                .where(Card.user_id == user_id, Card.deck_id.in_(child_ids))
+                .distinct()
+            )
+        else:
+            nt_stmt = select(Notetype.id).where(Notetype.user_id == user_id)
+
+        nt_res = await db.execute(nt_stmt)
+        notetype_ids = [row[0] for row in nt_res.all()]
+        if not notetype_ids:
+            return []
+
+        fld_stmt = (
+            select(NotetypeField.name)
+            .where(NotetypeField.notetype_id.in_(notetype_ids))
+            .order_by(NotetypeField.ord.asc(), NotetypeField.id.asc())
+        )
+        fld_res = await db.execute(fld_stmt)
+        seen = set()
+        fields: List[str] = []
+        for (name,) in fld_res.all():
+            if name and name not in seen:
+                seen.add(name)
+                fields.append(name)
+        return fields
+
+    @staticmethod
     async def start_quiz_session(
         db: AsyncSession,
         user_id: str,
@@ -148,6 +185,13 @@ class GameService:
         answer_field: Optional[str] = None,
         hint_field: Optional[str] = None,
     ) -> StartGameResponse:
+        if direction == "custom":
+            selected_custom = [f.strip().lower() for f in [question_field, answer_field, hint_field] if f and f.strip()]
+            if not question_field or not answer_field:
+                raise ValueError("Vui lòng chọn cả Trường Câu Hỏi và Trường Đáp Án.")
+            if len(selected_custom) != len(set(selected_custom)):
+                raise ValueError("Các trường Câu Hỏi, Đáp Án và Gợi Ý không được trùng nhau.")
+
         conditions = [Card.user_id == user_id]
 
         if deck_id:
@@ -157,14 +201,16 @@ class GameService:
         if mode == "lapsed_only":
             conditions.append(Card.lapses > 0)
 
-        # Fetch candidate cards in scope
+        # Fetch random candidate cards across the entire deck/scope
+        sample_limit = max(200, total_questions * 4)
         stmt = (
             select(Card)
             .options(
                 selectinload(Card.note).selectinload(Note.notetype).selectinload(Notetype.fields),
             )
             .where(and_(*conditions))
-            .limit(200)
+            .order_by(func.random())
+            .limit(sample_limit)
         )
         res = await db.execute(stmt)
         cards = res.scalars().all()
@@ -177,7 +223,8 @@ class GameService:
                     selectinload(Card.note).selectinload(Note.notetype).selectinload(Notetype.fields),
                 )
                 .where(Card.user_id == user_id)
-                .limit(200)
+                .order_by(func.random())
+                .limit(sample_limit)
             )
             all_res = await db.execute(all_stmt)
             cards = all_res.scalars().all()
@@ -185,11 +232,12 @@ class GameService:
         if len(cards) < 4:
             raise ValueError("Need at least 4 cards in your library to generate an interactive 4-option quiz.")
 
-        # Create GameSession record
+        # Create GameSession record (encode srs_sync flag in game_type to persist without schema migration)
+        srs_tag = "srs" if srs_sync else "nosrs"
         session = GameSession(
             user_id=user_id,
             deck_id=deck_id or (cards[0].deck_id if cards else 1),
-            game_type=f"quiz-{mode}-{direction}",
+            game_type=f"quiz-{mode}-{direction}-{srs_tag}",
             total_questions=min(total_questions, len(cards)),
             created_at=datetime.utcnow(),
         )
@@ -392,13 +440,17 @@ class GameService:
     async def finish_session(
         db: AsyncSession,
         session_id: str,
+        user_id: Optional[str] = None,
     ) -> FinishGameResponse:
-        session_data = active_quiz_cache.pop(session_id, None)
         stmt = select(GameSession).where(GameSession.id == session_id)
         res = await db.execute(stmt)
         session = res.scalars().first()
         if not session:
             raise ValueError("Session record not found.")
+        if user_id and session.user_id != user_id:
+            raise PermissionError("You do not have permission to access this game session.")
+
+        session_data = active_quiz_cache.pop(session_id, None)
 
         if session_data:
             duration = int((datetime.utcnow() - session_data["start_time"]).total_seconds())
@@ -413,6 +465,7 @@ class GameService:
 
         total = session.total_questions if session.total_questions > 0 else 1
         accuracy = round((session.correct_count / total) * 100.0, 1)
+        srs_sync = not (session.game_type or "").endswith("-nosrs")
 
         return FinishGameResponse(
             session_id=session.id,
@@ -422,4 +475,35 @@ class GameService:
             correct_count=session.correct_count,
             accuracy_percent=accuracy,
             duration_seconds=duration,
+            srs_sync=srs_sync,
+        )
+
+    @staticmethod
+    async def get_session_result(
+        db: AsyncSession,
+        user_id: str,
+        session_id: str,
+    ) -> FinishGameResponse:
+        """Retrieve a completed quiz session result, verifying ownership."""
+        stmt = select(GameSession).where(GameSession.id == session_id)
+        res = await db.execute(stmt)
+        session = res.scalars().first()
+        if not session:
+            raise ValueError("Session record not found.")
+        if session.user_id != user_id:
+            raise PermissionError("You do not have permission to view this game session.")
+
+        total = session.total_questions if session.total_questions > 0 else 1
+        accuracy = round((session.correct_count / total) * 100.0, 1)
+        srs_sync = not (session.game_type or "").endswith("-nosrs")
+
+        return FinishGameResponse(
+            session_id=session.id,
+            score=session.score,
+            xp_earned=session.xp_earned,
+            total_questions=session.total_questions,
+            correct_count=session.correct_count,
+            accuracy_percent=accuracy,
+            duration_seconds=session.duration_seconds,
+            srs_sync=srs_sync,
         )

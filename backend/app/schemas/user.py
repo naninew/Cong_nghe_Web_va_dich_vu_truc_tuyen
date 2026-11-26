@@ -20,6 +20,7 @@ class UserCreate(UserBase):
 class UserUpdateRequest(BaseModel):
     display_name: Optional[str] = None
     avatar_url: Optional[str] = None
+    daily_goal: Optional[int] = None
 
 
 class UserResponse(UserBase):
@@ -27,6 +28,7 @@ class UserResponse(UserBase):
     role: str
     xp: int
     streak_days: int
+    daily_goal: int = 50
     last_study_date: Optional[date] = None
     created_at: datetime
 
