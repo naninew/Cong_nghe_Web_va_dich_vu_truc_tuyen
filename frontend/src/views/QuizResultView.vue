@@ -54,19 +54,27 @@
           Dashboard
         </router-link>
 
-        <router-link
-          to="/games"
+        <button
+          @click="playAgain"
+          type="button"
           class="flex-1 py-3 rounded-xl bg-primary text-on-primary font-bold text-xs shadow-[0_3px_0_0_#1a0f91] active:translate-y-[2px] active:shadow-none hover:bg-primary-container transition-all text-center"
         >
           Play Again
-        </router-link>
+        </button>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { useRouter } from 'vue-router';
 import { useGameStore } from '../stores/game';
 
+const router = useRouter();
 const gameStore = useGameStore();
+
+function playAgain() {
+  gameStore.resetGame();
+  router.push('/games');
+}
 </script>

@@ -100,10 +100,23 @@ export const useGameStore = defineStore('game', () => {
     }
   }
 
+  async function fetchDeckFields(deckId?: number | null): Promise<string[]> {
+    const res = await api.get('/games/fields', {
+      params: deckId ? { deck_id: deckId } : {},
+    });
+    return Array.isArray(res.data) ? res.data : [];
+  }
+
   async function finishGame() {
     if (!sessionId.value) return;
     const res = await api.post('/games/finish', { session_id: sessionId.value });
     finalResult.value = res.data;
+    // Clear active session state so navigating back to /games shows the lobby
+    sessionId.value = null;
+    questions.value = [];
+    currentIndex.value = 0;
+    isAnswered.value = false;
+    lastAnswerResult.value = null;
     return res.data;
   }
 
@@ -133,6 +146,7 @@ export const useGameStore = defineStore('game', () => {
     activeMode,
     activeDirection,
     startGame,
+    fetchDeckFields,
     submitAnswer,
     nextQuestion,
     finishGame,

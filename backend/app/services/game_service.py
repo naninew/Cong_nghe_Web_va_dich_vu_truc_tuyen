@@ -13,7 +13,7 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from sqlalchemy import and_
+from sqlalchemy import and_, func
 
 from ..models.user import User
 from ..models.card import Card, Note
@@ -136,6 +136,43 @@ def _extract_card_info(
 class GameService:
 
     @staticmethod
+    async def get_available_fields(
+        db: AsyncSession,
+        user_id: str,
+        deck_id: Optional[int] = None,
+    ) -> List[str]:
+        """Return distinct available note field names for a deck (or all user decks)."""
+        if deck_id:
+            child_ids = await DeckService.get_deck_and_child_ids(db, user_id, deck_id)
+            nt_stmt = (
+                select(Note.notetype_id)
+                .join(Card, Card.note_id == Note.id)
+                .where(Card.user_id == user_id, Card.deck_id.in_(child_ids))
+                .distinct()
+            )
+        else:
+            nt_stmt = select(Notetype.id).where(Notetype.user_id == user_id)
+
+        nt_res = await db.execute(nt_stmt)
+        notetype_ids = [row[0] for row in nt_res.all()]
+        if not notetype_ids:
+            return []
+
+        fld_stmt = (
+            select(NotetypeField.name)
+            .where(NotetypeField.notetype_id.in_(notetype_ids))
+            .order_by(NotetypeField.ord.asc(), NotetypeField.id.asc())
+        )
+        fld_res = await db.execute(fld_stmt)
+        seen = set()
+        fields: List[str] = []
+        for (name,) in fld_res.all():
+            if name and name not in seen:
+                seen.add(name)
+                fields.append(name)
+        return fields
+
+    @staticmethod
     async def start_quiz_session(
         db: AsyncSession,
         user_id: str,
@@ -148,6 +185,13 @@ class GameService:
         answer_field: Optional[str] = None,
         hint_field: Optional[str] = None,
     ) -> StartGameResponse:
+        if direction == "custom":
+            selected_custom = [f.strip().lower() for f in [question_field, answer_field, hint_field] if f and f.strip()]
+            if not question_field or not answer_field:
+                raise ValueError("Vui lòng chọn cả Trường Câu Hỏi và Trường Đáp Án.")
+            if len(selected_custom) != len(set(selected_custom)):
+                raise ValueError("Các trường Câu Hỏi, Đáp Án và Gợi Ý không được trùng nhau.")
+
         conditions = [Card.user_id == user_id]
 
         if deck_id:
@@ -157,14 +201,16 @@ class GameService:
         if mode == "lapsed_only":
             conditions.append(Card.lapses > 0)
 
-        # Fetch candidate cards in scope
+        # Fetch random candidate cards across the entire deck/scope
+        sample_limit = max(200, total_questions * 4)
         stmt = (
             select(Card)
             .options(
                 selectinload(Card.note).selectinload(Note.notetype).selectinload(Notetype.fields),
             )
             .where(and_(*conditions))
-            .limit(200)
+            .order_by(func.random())
+            .limit(sample_limit)
         )
         res = await db.execute(stmt)
         cards = res.scalars().all()
@@ -177,7 +223,8 @@ class GameService:
                     selectinload(Card.note).selectinload(Note.notetype).selectinload(Notetype.fields),
                 )
                 .where(Card.user_id == user_id)
-                .limit(200)
+                .order_by(func.random())
+                .limit(sample_limit)
             )
             all_res = await db.execute(all_stmt)
             cards = all_res.scalars().all()

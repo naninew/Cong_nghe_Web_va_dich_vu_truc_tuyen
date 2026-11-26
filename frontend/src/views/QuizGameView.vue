@@ -59,7 +59,7 @@
             <span class="material-symbols-outlined text-base text-primary">swap_horiz</span>
             <span>Chiều Hỏi & Đáp (Question Direction)</span>
           </label>
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <div
               v-for="d in directions"
               :key="d.value"
@@ -77,31 +77,67 @@
         </div>
 
         <!-- Custom Field Mapping (when direction is custom) -->
-        <div v-if="selectedDirection === 'custom'" class="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 bg-surface-container-low rounded-xl border border-outline-variant/20 text-xs">
-          <div class="flex flex-col gap-1">
-            <label class="font-bold text-on-surface">Trường Câu Hỏi (Prompt)</label>
-            <input
-              v-model="customQuestionField"
-              placeholder="vd: Front hoặc Word"
-              class="px-2.5 py-1.5 rounded-lg bg-surface-container-lowest border border-outline-variant/20 text-xs text-on-surface outline-none"
-            />
+        <div v-if="selectedDirection === 'custom'" class="flex flex-col gap-2.5 p-3.5 bg-surface-container-low rounded-xl border border-outline-variant/20 text-xs">
+          <div v-if="isLoadingFields" class="text-[11px] text-outline font-medium">
+            Đang tải danh sách trường của bộ thẻ...
           </div>
-          <div class="flex flex-col gap-1">
-            <label class="font-bold text-on-surface">Trường Đáp Án (Answer)</label>
-            <input
-              v-model="customAnswerField"
-              placeholder="vd: Back hoặc Meaning"
-              class="px-2.5 py-1.5 rounded-lg bg-surface-container-lowest border border-outline-variant/20 text-xs text-on-surface outline-none"
-            />
+          <div v-else class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div class="flex flex-col gap-1">
+              <label class="font-bold text-on-surface">Trường Câu Hỏi (Prompt) *</label>
+              <select
+                v-model="customQuestionField"
+                class="px-2.5 py-2 rounded-lg bg-surface-container-lowest border border-outline-variant/30 text-xs text-on-surface outline-none"
+              >
+                <option value="" disabled>-- Chọn trường câu hỏi --</option>
+                <option
+                  v-for="f in availableFields"
+                  :key="'q-' + f"
+                  :value="f"
+                  :disabled="f === customAnswerField || (customHintField !== '' && f === customHintField)"
+                >
+                  {{ f }}
+                </option>
+              </select>
+            </div>
+            <div class="flex flex-col gap-1">
+              <label class="font-bold text-on-surface">Trường Đáp Án (Answer) *</label>
+              <select
+                v-model="customAnswerField"
+                class="px-2.5 py-2 rounded-lg bg-surface-container-lowest border border-outline-variant/30 text-xs text-on-surface outline-none"
+              >
+                <option value="" disabled>-- Chọn trường đáp án --</option>
+                <option
+                  v-for="f in availableFields"
+                  :key="'a-' + f"
+                  :value="f"
+                  :disabled="f === customQuestionField || (customHintField !== '' && f === customHintField)"
+                >
+                  {{ f }}
+                </option>
+              </select>
+            </div>
+            <div class="flex flex-col gap-1">
+              <label class="font-bold text-on-surface">Trường Gợi Ý (Hint - tùy chọn)</label>
+              <select
+                v-model="customHintField"
+                class="px-2.5 py-2 rounded-lg bg-surface-container-lowest border border-outline-variant/30 text-xs text-on-surface outline-none"
+              >
+                <option value="">-- Không dùng gợi ý --</option>
+                <option
+                  v-for="f in availableFields"
+                  :key="'h-' + f"
+                  :value="f"
+                  :disabled="f === customQuestionField || f === customAnswerField"
+                >
+                  {{ f }}
+                </option>
+              </select>
+            </div>
           </div>
-          <div class="flex flex-col gap-1">
-            <label class="font-bold text-on-surface">Trường Gợi Ý (Hint - tùy chọn)</label>
-            <input
-              v-model="customHintField"
-              placeholder="vd: Example hoặc Reading"
-              class="px-2.5 py-1.5 rounded-lg bg-surface-container-lowest border border-outline-variant/20 text-xs text-on-surface outline-none"
-            />
-          </div>
+          <p v-if="customFieldError" class="text-[11px] font-semibold text-error flex items-center gap-1">
+            <span class="material-symbols-outlined text-sm">error</span>
+            <span>{{ customFieldError }}</span>
+          </p>
         </div>
 
         <!-- 4. Question Count & SRS Sync Toggle -->
@@ -122,23 +158,35 @@
             </div>
           </div>
 
-          <div class="flex flex-col gap-1.5 justify-center">
+          <div class="flex flex-col gap-1 justify-center">
             <label class="text-xs font-bold text-on-surface-variant">Anki SRS Sync</label>
             <label class="flex items-center gap-2 cursor-pointer text-xs text-on-surface font-semibold">
-              <input type="checkbox" v-model="srsSync" class="w-4 h-4 rounded text-primary accent-primary" />
-              <span>Auto-update memory intervals</span>
+              <input type="checkbox" v-model="srsSync" class="w-4 h-4 rounded text-primary accent-primary shrink-0" />
+              <span>Tự động cập nhật lịch ôn tập (Auto-update memory intervals)</span>
             </label>
+            <p class="text-[11px] text-on-surface-variant leading-snug pl-6">
+              Bật: trả lời đúng sẽ giãn lịch ôn (Good), sai sẽ đặt lịch ôn lại sớm (Again). Tắt nếu chỉ muốn luyện tập không ảnh hưởng tiến độ thẻ.
+            </p>
           </div>
+        </div>
+
+        <!-- Error Banner -->
+        <div
+          v-if="startError"
+          class="px-3.5 py-2.5 rounded-xl bg-red-50 border border-error/30 text-error text-xs font-semibold flex items-center gap-2"
+        >
+          <span class="material-symbols-outlined text-base shrink-0">error</span>
+          <span>{{ startError }}</span>
         </div>
 
         <!-- Launch Button -->
         <button
           @click="launchGame"
-          :disabled="gameStore.isLoading"
-          class="w-full py-3.5 rounded-xl bg-primary text-on-primary font-bold text-sm shadow-[0_3px_0_0_#1a0f91] active:translate-y-[2px] active:shadow-none hover:bg-primary-container transition-all flex items-center justify-center gap-2 mt-2"
+          :disabled="gameStore.isLoading || (selectedDirection === 'custom' && !!customFieldError)"
+          class="w-full py-3.5 rounded-xl bg-primary text-on-primary font-bold text-sm shadow-[0_3px_0_0_#1a0f91] active:translate-y-[2px] active:shadow-none hover:bg-primary-container disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2 mt-2"
         >
           <span class="material-symbols-outlined text-lg">play_arrow</span>
-          <span>Start Challenge</span>
+          <span>{{ gameStore.isLoading ? 'Đang khởi tạo...' : 'Start Challenge' }}</span>
         </button>
       </div>
     </div>
@@ -310,7 +358,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useGameStore } from '../stores/game';
 import { useDeckStore } from '../stores/deck';
@@ -327,10 +375,13 @@ const selectedDirection = ref<string>('front_to_back');
 const questionCount = ref<number>(10);
 const srsSync = ref<boolean>(true);
 
+const availableFields = ref<string[]>([]);
+const isLoadingFields = ref<boolean>(false);
 const customQuestionField = ref<string>('');
 const customAnswerField = ref<string>('');
 const customHintField = ref<string>('');
 const showGameHint = ref<boolean>(false);
+const startError = ref<string | null>(null);
 
 const survivalLives = ref<number>(3);
 const timerSecondsRemaining = ref<number>(10);
@@ -348,9 +399,56 @@ const gameModes = [
 const directions = [
   { value: 'front_to_back', label: 'Mặt trước ➔ Mặt sau', icon: 'arrow_forward', hint: 'Từ vựng ➔ Định nghĩa' },
   { value: 'back_to_front', label: 'Mặt sau ➔ Mặt trước', icon: 'arrow_back', hint: 'Định nghĩa ➔ Từ vựng' },
-  { value: 'audio_listening', label: 'Nghe phát âm', icon: 'headphones', hint: 'Âm thanh ➔ Ý nghĩa' },
   { value: 'custom', label: 'Tùy chọn trường', icon: 'tune', hint: 'Tự chọn trường' },
 ];
+
+const customFieldError = computed(() => {
+  if (selectedDirection.value !== 'custom') return null;
+  if (isLoadingFields.value) return null;
+  if (availableFields.value.length < 2) {
+    return 'Bộ thẻ này không đủ trường để tùy chọn (cần ít nhất 2 trường khác nhau).';
+  }
+  if (!customQuestionField.value || !customAnswerField.value) {
+    return 'Vui lòng chọn đầy đủ Trường Câu Hỏi và Trường Đáp Án.';
+  }
+  const chosen = [customQuestionField.value, customAnswerField.value, customHintField.value].filter(Boolean);
+  if (new Set(chosen).size !== chosen.length) {
+    return 'Các trường Câu Hỏi, Đáp Án và Gợi Ý không được trùng nhau.';
+  }
+  return null;
+});
+
+async function loadDeckFields(deckId: number | null) {
+  isLoadingFields.value = true;
+  try {
+    const fields = await gameStore.fetchDeckFields(deckId);
+    availableFields.value = fields;
+
+    if (!fields.includes(customQuestionField.value)) {
+      customQuestionField.value = fields[0] || '';
+    }
+    if (!fields.includes(customAnswerField.value) || customAnswerField.value === customQuestionField.value) {
+      customAnswerField.value = fields.find((f) => f !== customQuestionField.value) || '';
+    }
+    if (
+      customHintField.value &&
+      (!fields.includes(customHintField.value) ||
+        customHintField.value === customQuestionField.value ||
+        customHintField.value === customAnswerField.value)
+    ) {
+      customHintField.value = '';
+    }
+  } catch {
+    availableFields.value = [];
+  } finally {
+    isLoadingFields.value = false;
+  }
+}
+
+watch(selectedDeckId, (newDeckId) => {
+  startError.value = null;
+  loadDeckFields(newDeckId);
+});
 
 const flatDecksList = computed(() => {
   const result: Array<{ id: number; fullName: string; total_cards: number }> = [];
@@ -375,6 +473,7 @@ onMounted(async () => {
   if (route.query.mode) {
     selectedMode.value = String(route.query.mode);
   }
+  await loadDeckFields(selectedDeckId.value);
   window.addEventListener('keydown', handleKeydown);
 });
 
@@ -384,19 +483,31 @@ onUnmounted(() => {
 });
 
 async function launchGame() {
+  startError.value = null;
+  if (selectedDirection.value === 'custom' && customFieldError.value) {
+    startError.value = customFieldError.value;
+    return;
+  }
   survivalLives.value = 3;
   showGameHint.value = false;
-  await gameStore.startGame(
-    selectedDeckId.value,
-    questionCount.value,
-    srsSync.value,
-    selectedMode.value,
-    selectedDirection.value,
-    customQuestionField.value.trim() || null,
-    customAnswerField.value.trim() || null,
-    customHintField.value.trim() || null
-  );
-  startQuestionTimer();
+  try {
+    await gameStore.startGame(
+      selectedDeckId.value,
+      questionCount.value,
+      srsSync.value,
+      selectedMode.value,
+      selectedDirection.value,
+      selectedDirection.value === 'custom' ? customQuestionField.value || null : null,
+      selectedDirection.value === 'custom' ? customAnswerField.value || null : null,
+      selectedDirection.value === 'custom' ? customHintField.value || null : null
+    );
+    startQuestionTimer();
+  } catch (err: any) {
+    startError.value =
+      err?.response?.data?.detail ||
+      err?.message ||
+      'Không thể bắt đầu ván chơi. Vui lòng kiểm tra lại bộ thẻ và thử lại.';
+  }
 }
 
 function startQuestionTimer() {
