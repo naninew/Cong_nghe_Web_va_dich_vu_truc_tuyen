@@ -19,6 +19,7 @@ class User(Base):
     role = Column(String(50), default="user", nullable=False)
     xp = Column(Integer, default=0, nullable=False)
     streak_days = Column(Integer, default=0, nullable=False)
+    daily_goal = Column(Integer, default=50, nullable=False)
     last_study_date = Column(Date, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

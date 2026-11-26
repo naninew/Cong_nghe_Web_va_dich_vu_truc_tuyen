@@ -160,6 +160,13 @@ async def update_current_user_profile(
         user.display_name = req.display_name.strip()
     if req.avatar_url is not None:
         user.avatar_url = req.avatar_url
+    if req.daily_goal is not None:
+        if req.daily_goal < 1 or req.daily_goal > 500:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Daily goal must be between 1 and 500 cards.",
+            )
+        user.daily_goal = req.daily_goal
     await db.commit()
     await db.refresh(user)
     return UserResponse.model_validate(user)

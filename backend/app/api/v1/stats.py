@@ -4,7 +4,7 @@ Analytics and Statistics Endpoints.
 
 from typing import Dict, Any, List, Optional
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -17,6 +17,7 @@ from ...models.deck import Deck
 from ...models.card import Card, Note, Revlog
 from ...core.deps import get_current_user
 from ...services.deck_service import DeckService
+from ...services.study_service import StudyService
 
 router = APIRouter(prefix="/stats", tags=["stats"])
 
@@ -65,7 +66,25 @@ async def get_overview_stats(
 
     total_reviews = sum(cnt for _, cnt in rev_rows)
     success_reviews = sum(cnt for rating, cnt in rev_rows if rating > 1)
-    retention_rate = round((success_reviews / total_reviews * 100.0), 1) if total_reviews > 0 else 92.4
+    retention_rate = round((success_reviews / total_reviews * 100.0), 1) if total_reviews > 0 else None
+
+    # 2b. Reviews completed today (aligned with Anki 4:00 AM rollover)
+    _, _, day_start_dt = StudyService.get_day_timing()
+    today_rev_stmt = (
+        select(func.count(Revlog.id))
+        .where(Revlog.user_id == user.id, Revlog.created_at >= day_start_dt)
+    )
+    today_rev_res = await db.execute(today_rev_stmt)
+    reviews_today = today_rev_res.scalar() or 0
+
+    # 2c. Effective streak (reset to 0 if user missed yesterday and today)
+    today_date = date.today()
+    effective_streak = user.streak_days
+    if not user.last_study_date or user.last_study_date < today_date - timedelta(days=1):
+        effective_streak = 0
+        if user.streak_days != 0:
+            user.streak_days = 0
+            await db.commit()
 
     # 3. Due today
     due_stmt = (
@@ -75,17 +94,19 @@ async def get_overview_stats(
     due_res = await db.execute(due_stmt)
     due_today = due_res.scalar() or 0
 
+    daily_target = user.daily_goal or 50
+
     return {
         "user": {
             "name": user.display_name,
             "email": user.email,
             "avatar_url": user.avatar_url,
-            "streak_days": user.streak_days,
+            "streak_days": effective_streak,
             "xp": user.xp,
         },
         "daily_goal": {
-            "completed": min(total_reviews, 50),
-            "target": 50,
+            "completed": reviews_today,
+            "target": daily_target,
         },
         "due_count": due_today + learn_count,
         "total_cards": total_cards,

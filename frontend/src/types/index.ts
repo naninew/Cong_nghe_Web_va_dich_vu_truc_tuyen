@@ -6,6 +6,7 @@ export interface User {
   role: string;
   xp: number;
   streak_days: number;
+  daily_goal?: number;
 }
 
 export interface DeckCounts {
@@ -155,7 +156,7 @@ export interface StatsOverview {
   mature_cards: number;
   learning_cards: number;
   new_cards: number;
-  retention_rate: number;
+  retention_rate: number | null;
 }
 
 export interface DevUser {

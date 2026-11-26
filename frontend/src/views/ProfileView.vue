@@ -204,7 +204,7 @@ const deckStore = useDeckStore();
 
 const displayName = ref(authStore.user?.display_name || '');
 const selectedAvatar = ref(authStore.user?.avatar_url || '');
-const dailyGoal = ref(50);
+const dailyGoal = ref(authStore.user?.daily_goal || 50);
 const preferredScheduler = ref('fsrs');
 const isSaving = ref(false);
 
@@ -224,6 +224,7 @@ onMounted(async () => {
   if (authStore.user) {
     displayName.value = authStore.user.display_name;
     selectedAvatar.value = authStore.user.avatar_url || avatarPresets[0];
+    dailyGoal.value = authStore.user.daily_goal || 50;
   }
   await fetchDevUsers();
 });
@@ -243,8 +244,10 @@ async function saveProfile() {
     const res = await api.put('/auth/me', {
       display_name: displayName.value,
       avatar_url: selectedAvatar.value,
+      daily_goal: Number(dailyGoal.value),
     });
     authStore.user = res.data;
+    dailyGoal.value = res.data.daily_goal || 50;
     alert('Profile updated successfully!');
   } catch (err: any) {
     alert(err.response?.data?.detail || 'Failed to update profile.');
@@ -259,6 +262,7 @@ async function switchAccount(email: string, name: string) {
     await deckStore.fetchDecks();
     displayName.value = authStore.user?.display_name || '';
     selectedAvatar.value = authStore.user?.avatar_url || avatarPresets[0];
+    dailyGoal.value = authStore.user?.daily_goal || 50;
     alert(`Switched to account: ${email}`);
     router.push('/dashboard');
   } catch (err) {
