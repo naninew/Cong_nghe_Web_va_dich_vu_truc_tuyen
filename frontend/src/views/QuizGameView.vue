@@ -589,8 +589,11 @@ async function handleNext() {
   const isSurvivalDead = gameStore.activeMode === 'survival' && survivalLives.value <= 0;
 
   if (gameStore.isLastQuestion || isSurvivalDead) {
-    await gameStore.finishGame();
-    router.push('/games/result');
+    const finished = await gameStore.finishGame();
+    router.push({
+      path: '/games/result',
+      query: finished?.session_id ? { session_id: finished.session_id } : undefined,
+    });
   } else {
     await gameStore.nextQuestion();
     startQuestionTimer();

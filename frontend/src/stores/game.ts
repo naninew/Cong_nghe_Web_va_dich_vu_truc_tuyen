@@ -107,6 +107,17 @@ export const useGameStore = defineStore('game', () => {
     return Array.isArray(res.data) ? res.data : [];
   }
 
+  async function fetchGameResult(targetSessionId: string): Promise<QuizFinalResult> {
+    isLoading.value = true;
+    try {
+      const res = await api.get(`/games/${encodeURIComponent(targetSessionId)}`);
+      finalResult.value = res.data;
+      return res.data;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
   async function finishGame() {
     if (!sessionId.value) return;
     const res = await api.post('/games/finish', { session_id: sessionId.value });
@@ -147,6 +158,7 @@ export const useGameStore = defineStore('game', () => {
     activeDirection,
     startGame,
     fetchDeckFields,
+    fetchGameResult,
     submitAnswer,
     nextQuestion,
     finishGame,

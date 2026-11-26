@@ -135,6 +135,7 @@ export interface QuizFinalResult {
   correct_count: number;
   accuracy_percent: number;
   duration_seconds: number;
+  srs_sync?: boolean;
 }
 
 export interface StatsOverview {

@@ -232,11 +232,12 @@ class GameService:
         if len(cards) < 4:
             raise ValueError("Need at least 4 cards in your library to generate an interactive 4-option quiz.")
 
-        # Create GameSession record
+        # Create GameSession record (encode srs_sync flag in game_type to persist without schema migration)
+        srs_tag = "srs" if srs_sync else "nosrs"
         session = GameSession(
             user_id=user_id,
             deck_id=deck_id or (cards[0].deck_id if cards else 1),
-            game_type=f"quiz-{mode}-{direction}",
+            game_type=f"quiz-{mode}-{direction}-{srs_tag}",
             total_questions=min(total_questions, len(cards)),
             created_at=datetime.utcnow(),
         )
@@ -439,13 +440,17 @@ class GameService:
     async def finish_session(
         db: AsyncSession,
         session_id: str,
+        user_id: Optional[str] = None,
     ) -> FinishGameResponse:
-        session_data = active_quiz_cache.pop(session_id, None)
         stmt = select(GameSession).where(GameSession.id == session_id)
         res = await db.execute(stmt)
         session = res.scalars().first()
         if not session:
             raise ValueError("Session record not found.")
+        if user_id and session.user_id != user_id:
+            raise PermissionError("You do not have permission to access this game session.")
+
+        session_data = active_quiz_cache.pop(session_id, None)
 
         if session_data:
             duration = int((datetime.utcnow() - session_data["start_time"]).total_seconds())
@@ -460,6 +465,7 @@ class GameService:
 
         total = session.total_questions if session.total_questions > 0 else 1
         accuracy = round((session.correct_count / total) * 100.0, 1)
+        srs_sync = not (session.game_type or "").endswith("-nosrs")
 
         return FinishGameResponse(
             session_id=session.id,
@@ -469,4 +475,35 @@ class GameService:
             correct_count=session.correct_count,
             accuracy_percent=accuracy,
             duration_seconds=duration,
+            srs_sync=srs_sync,
+        )
+
+    @staticmethod
+    async def get_session_result(
+        db: AsyncSession,
+        user_id: str,
+        session_id: str,
+    ) -> FinishGameResponse:
+        """Retrieve a completed quiz session result, verifying ownership."""
+        stmt = select(GameSession).where(GameSession.id == session_id)
+        res = await db.execute(stmt)
+        session = res.scalars().first()
+        if not session:
+            raise ValueError("Session record not found.")
+        if session.user_id != user_id:
+            raise PermissionError("You do not have permission to view this game session.")
+
+        total = session.total_questions if session.total_questions > 0 else 1
+        accuracy = round((session.correct_count / total) * 100.0, 1)
+        srs_sync = not (session.game_type or "").endswith("-nosrs")
+
+        return FinishGameResponse(
+            session_id=session.id,
+            score=session.score,
+            xp_earned=session.xp_earned,
+            total_questions=session.total_questions,
+            correct_count=session.correct_count,
+            accuracy_percent=accuracy,
+            duration_seconds=session.duration_seconds,
+            srs_sync=srs_sync,
         )
