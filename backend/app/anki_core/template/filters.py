@@ -51,17 +51,17 @@ def filter_text(value: str) -> str:
 
 
 def filter_hint(value: str, field_name: str = "Hint") -> str:
-    """Wrap value in a collapsible hint container (unique ids per render)."""
+    """
+    Collapsible hint. No inline JavaScript: the link carries ``data-hint-target`` and the
+    study page opens it with a delegated click handler (inline handlers are stripped by DOMPurify).
+    """
     if not value or not value.strip():
         return ""
-    uid = next(_hint_ids)
-    body_id = f"hint_body_{uid}"
+    body_id = f"hint_body_{next(_hint_ids)}"
     label = html.escape(field_name)
     return (
         f'<div class="anki-hint-container">'
-        f'<a href="#" class="anki-hint-link" '
-        f"onclick=\"this.style.display='none';document.getElementById('{body_id}').style.display='block';return false;\">"
-        f"Show {label}</a>"
+        f'<a href="#" class="anki-hint-link" data-hint-target="{body_id}">Show {label}</a>'
         f'<div class="anki-hint-body" id="{body_id}" style="display:none;">{value}</div>'
         f"</div>"
     )
@@ -136,7 +136,10 @@ def filter_kana(value: str) -> str:
 # Sound tags
 # ---------------------------------------------------------------------------
 def render_sound_tags(html_str: str, media_base_url: str = "/media") -> str:
-    """Transform [sound:filename.mp3] into an audio button (filename safely escaped)."""
+    """
+    Transform [sound:filename.mp3] into an audio button (filename safely escaped).
+    No inline JavaScript: the study page plays ``data-src`` via a delegated click handler.
+    """
     if not html_str:
         return ""
 
@@ -147,9 +150,7 @@ def render_sound_tags(html_str: str, media_base_url: str = "/media") -> str:
             f'<span class="anki-audio-player" data-sound="{html.escape(filename, quote=True)}">'
             f'<button type="button" class="audio-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full '
             f'bg-primary-fixed text-on-primary-fixed hover:bg-primary-fixed-dim transition-all text-xs font-semibold '
-            f'shadow-sm active:translate-y-0.5" data-src="{html.escape(src, quote=True)}" '
-            f"onclick=\"var f=this.parentNode.dataset.sound,u=this.dataset.src;"
-            f"if(window.playAnkiAudio){{window.playAnkiAudio(f)}}else{{new Audio(u).play().catch(function(e){{console.warn(e)}})}}\">"
+            f'shadow-sm active:translate-y-0.5" data-src="{html.escape(src, quote=True)}">'
             f'<span class="material-symbols-outlined text-sm leading-none">volume_up</span><span>Audio</span>'
             f"</button></span>"
         )

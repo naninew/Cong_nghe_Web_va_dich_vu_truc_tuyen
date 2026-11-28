@@ -64,7 +64,8 @@ class DeckConfigParams(BaseModel):
     leech_action: str = "tag"                     # "tag" or "suspend"
     fsrs_enabled: bool = False
     desired_retention: float = 0.90
-    fsrs_params: Optional[List[float]] = None     # 19 weights for FSRS v4.5
+    fsrs_params: Optional[List[float]] = None     # 19 weights for FSRS-5
+    enable_fuzz: bool = True                      # randomise review intervals slightly (Anki default)
 
 
 class CardState(BaseModel):

@@ -3,7 +3,7 @@ SM-2 Spaced Repetition Scheduler (Anki V2/V3 compatible).
 Implements learning steps, graduation, review intervals, lapses, relearning steps and leeches.
 """
 
-from typing import Dict
+from typing import Dict, Optional
 from .base import BaseScheduler
 from ..models import (
     CardState,
@@ -18,21 +18,30 @@ from ..models import (
 class SM2Scheduler(BaseScheduler):
     """Anki SM-2 / V2 / V3 Algorithm Implementation."""
 
-    def review_intervals(self, card: CardState) -> Dict[Rating, int]:
+    def review_intervals(self, card: CardState, today_day: Optional[int] = None) -> Dict[Rating, int]:
         """
-        Intervals (days) for Hard / Good / Easy on a review card.
-        Anki guarantees hard < good < easy, and each is at least previous interval + 1.
+        Intervals (days) for Hard / Good / Easy on a review card (Anki v2 formulas).
+
+        Overdue bonus: a card answered ``late`` days after its due date is rewarded,
+        because it was remembered longer than scheduled:
+            hard = (ivl + late/4) * hard_factor
+            good = (ivl + late/2) * ease
+            easy = (ivl + late)   * ease * easy_bonus
+        Then fuzz is applied, keeping prev < hard < good < easy.
         """
         cfg = self.config
         prev = max(1, card.interval)
+        late = max(0, today_day - card.due) if today_day is not None else 0
         ease = (card.factor or cfg.starting_ease) / 1000.0
         im = cfg.interval_modifier
 
-        hard = max(prev + 1, round(prev * cfg.hard_factor * im))
-        good = max(hard + 1, round(prev * ease * im))
-        easy = max(good + 1, round(prev * ease * cfg.easy_bonus * im))
-        cap = cfg.maximum_interval
-        return {Rating.HARD: min(hard, cap), Rating.GOOD: min(good, cap), Rating.EASY: min(easy, cap)}
+        hard = max(prev + 1, round((prev + late // 4) * cfg.hard_factor * im))
+        hard = self.apply_fuzz(hard, card, minimum=prev + 1)
+        good = max(hard + 1, round((prev + late // 2) * ease * im))
+        good = self.apply_fuzz(good, card, minimum=hard + 1)
+        easy = max(good + 1, round((prev + late) * ease * cfg.easy_bonus * im))
+        easy = self.apply_fuzz(easy, card, minimum=good + 1)
+        return {Rating.HARD: hard, Rating.GOOD: good, Rating.EASY: easy}
 
     def schedule(
         self,
@@ -66,7 +75,7 @@ class SM2Scheduler(BaseScheduler):
             tr = None if rating == Rating.EASY else self.step_transition(steps, left, rating)
             if tr is None:
                 ivl = cfg.easy_interval if rating == Rating.EASY else cfg.graduating_interval
-                state = review(max(1, ivl))
+                state = review(self.apply_fuzz(max(1, ivl), card))
             else:
                 state = learning(tr[0], tr[1], CardType.LEARNING)
                 state["interval"] = 0
@@ -98,7 +107,7 @@ class SM2Scheduler(BaseScheduler):
                 else:
                     state = review(lapse_ivl)
             else:
-                ivl = self.review_intervals(card)[rating]
+                ivl = self.review_intervals(card, today_day)[rating]
                 if rating == Rating.HARD:
                     factor = max(cfg.minimum_ease, factor - 150)
                 elif rating == Rating.EASY:

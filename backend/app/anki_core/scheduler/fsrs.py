@@ -183,7 +183,7 @@ class FSRSScheduler(BaseScheduler):
             left = len(steps) if ct == CardType.NEW else card.left
             tr = None if (rating == Rating.EASY or not steps) else self.step_transition(steps, left, rating)
             if tr is None:
-                state = review(self.next_interval(new_s))
+                state = review(self.apply_fuzz(self.next_interval(new_s), card))
             else:
                 state = learning(tr[0], tr[1], ct if relearn else CardType.LEARNING, 0 if not relearn else card.interval)
         else:
@@ -196,7 +196,7 @@ class FSRSScheduler(BaseScheduler):
                 state = (learning(steps[0], len(steps), CardType.RELEARNING, lapse_ivl)
                          if steps else review(lapse_ivl))
             else:
-                state = review(self._ordered_review_intervals(s, d, elapsed, short_term)[rating])
+                state = review(self._ordered_review_intervals(card, s, d, elapsed, short_term)[rating])
 
         if is_leech and cfg.leech_action == "suspend":
             state["queue"] = CardQueue.SUSPENDED
@@ -216,18 +216,17 @@ class FSRSScheduler(BaseScheduler):
         )
 
     def _ordered_review_intervals(
-        self, s: Optional[float], d: Optional[float], elapsed: int, short_term: bool
+        self, card: CardState, s: Optional[float], d: Optional[float], elapsed: int, short_term: bool
     ) -> Dict[Rating, int]:
-        """Hard/Good/Easy intervals with Anki's guarantee hard <= good < easy."""
+        """Hard/Good/Easy intervals (fuzzed) with Anki's guarantee hard < good < easy."""
         ivls = {
             g: self.next_interval(self._memory_after(s, d, g, elapsed, short_term)[0])
             for g in (Rating.HARD, Rating.GOOD, Rating.EASY)
         }
-        hard = min(ivls[Rating.HARD], ivls[Rating.GOOD])
-        good = max(ivls[Rating.GOOD], hard + 1)
-        easy = max(ivls[Rating.EASY], good + 1)
-        cap = self.config.maximum_interval
-        return {Rating.HARD: min(hard, cap), Rating.GOOD: min(good, cap), Rating.EASY: min(easy, cap)}
+        hard = self.apply_fuzz(min(ivls[Rating.HARD], ivls[Rating.GOOD]), card)
+        good = self.apply_fuzz(max(ivls[Rating.GOOD], hard + 1), card, minimum=hard + 1)
+        easy = self.apply_fuzz(max(ivls[Rating.EASY], good + 1), card, minimum=good + 1)
+        return {Rating.HARD: hard, Rating.GOOD: good, Rating.EASY: easy}
 
 
 def _clamp_d(d: float) -> float:

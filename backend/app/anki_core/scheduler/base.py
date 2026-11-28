@@ -13,11 +13,25 @@ Due-value convention (same as Anki):
   * card_type NEW                    -> ``due`` is the new-card position
 """
 
+import random
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple
 from ..models import CardState, CardType, DeckConfigParams, Rating, ScheduleResult
 
 DEFAULT_LEARNING_STEPS = [1.0, 10.0]
+
+# Anki fuzz ranges: (from_days, to_days, factor). Intervals < 2.5 days are never fuzzed.
+FUZZ_RANGES = [(2.5, 7.0, 0.15), (7.0, 20.0, 0.10), (20.0, float("inf"), 0.05)]
+
+
+def fuzz_bounds(interval: int) -> Tuple[int, int]:
+    """Range an interval may be fuzzed into (Anki: 15% / 10% / 5% bands, at least +-1 day)."""
+    if interval < 2.5:
+        return interval, interval
+    delta = 1.0
+    for start, end, factor in FUZZ_RANGES:
+        delta += factor * max(0.0, min(float(interval), end) - start)
+    return max(2, round(interval - delta)), round(interval + delta)
 
 
 class BaseScheduler(ABC):
@@ -74,6 +88,20 @@ class BaseScheduler(ABC):
                 return steps[nxt], n - nxt
             return None
         return None  # EASY always graduates
+
+    def apply_fuzz(self, interval: int, card: CardState, minimum: int = 1) -> int:
+        """
+        Spread review intervals a little so cards learned together do not stay clumped.
+        Deterministic per (card, reps): the button preview and the real answer always agree.
+        """
+        cap = self.config.maximum_interval
+        if not self.config.enable_fuzz:
+            return min(max(interval, minimum), cap)
+        lo, hi = fuzz_bounds(interval)
+        lo = max(lo, minimum)
+        hi = max(hi, lo)
+        r = random.Random(f"{card.card_id}:{card.reps}").random()
+        return min(lo + int(r * (hi - lo + 1)), hi, cap)
 
     def is_leech(self, lapses: int) -> bool:
         """Anki: leech at the threshold, then again every half-threshold lapses."""

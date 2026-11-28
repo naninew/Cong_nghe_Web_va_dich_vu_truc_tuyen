@@ -221,7 +221,7 @@
               </template>
 
               <!-- Fallback to raw template if clean_data unavailable -->
-              <div v-else class="anki-render w-full" v-html="studyStore.currentCard.rendered.front_html"></div>
+              <div v-else class="anki-render w-full" v-html="safeFrontHtml" @click="handleAnkiHtmlClick"></div>
             </div>
 
             <!-- Bottom Subtext Tip -->
@@ -315,7 +315,7 @@
               </template>
 
               <!-- Fallback to raw template if clean_data unavailable -->
-              <div v-else class="anki-render w-full" v-html="studyStore.currentCard.rendered.back_html"></div>
+              <div v-else class="anki-render w-full" v-html="safeBackHtml" @click="handleAnkiHtmlClick"></div>
             </div>
 
             <!-- Bottom Subtext Tip -->
@@ -416,6 +416,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { useStudyStore } from '../stores/study';
 import { scopeCss } from '../utils/scopeCss';
+import { sanitizeCardHtml, handleAnkiHtmlClick } from '../utils/ankiHtml';
 
 const route = useRoute();
 const studyStore = useStudyStore();
@@ -438,6 +439,8 @@ const flingY = ref(0);
 // Clean card data shorthand
 const cleanCard = computed(() => studyStore.currentCard?.clean_data || null);
 const scopedCardCss = computed(() => scopeCss(studyStore.currentCard?.rendered.css || ''));
+const safeFrontHtml = computed(() => sanitizeCardHtml(studyStore.currentCard?.rendered.front_html));
+const safeBackHtml = computed(() => sanitizeCardHtml(studyStore.currentCard?.rendered.back_html));
 
 // Answer submission state (prevents double-rating the same card)
 const isSubmitting = ref(false);

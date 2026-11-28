@@ -5,10 +5,11 @@ Verifies Auth, Decks, Study Queue, Quiz Game Engine, and APKG Ingestion.
 
 import os
 import pytest
+from conftest import SAMPLE_APKG
 from httpx import AsyncClient, ASGITransport
-from backend.app.main import app
-from backend.app.db.session import engine, Base, AsyncSessionLocal
-from backend.app.services.import_service import ImportService
+from app.main import app
+from app.db.session import engine, Base, AsyncSessionLocal
+from app.services.import_service import ImportService
 
 
 @pytest.mark.asyncio
@@ -41,7 +42,7 @@ async def test_full_api_workflow():
         assert me_res.json()["email"] == "tester@example.com"
 
         # 4. Ingest sample dataset into user account
-        apkg_path = r"D:\HUST_Study\2026.1\Web_va_dich_vu_online\Cong_nghe_Web_va_dich_vu_truc_tuyen\Anki_format_datasets\Tieng_Nhat_Tong_hop_N1_to_N5.apkg"
+        apkg_path = str(SAMPLE_APKG)
         if os.path.exists(apkg_path):
             async with AsyncSessionLocal() as db:
                 await ImportService.process_apkg_import(

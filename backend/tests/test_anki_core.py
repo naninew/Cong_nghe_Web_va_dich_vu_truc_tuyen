@@ -6,7 +6,8 @@ and APKG Importer on real datasets.
 
 import os
 import pytest
-from backend.app.anki_core import (
+from conftest import SAMPLE_APKG
+from app.anki_core import (
     CardType,
     CardQueue,
     Rating,
@@ -77,6 +78,7 @@ def test_sm2_review_card_and_lapses():
         starting_ease=2500,
         minimum_ease=1300,
         leech_threshold=3,
+        enable_fuzz=False,  # exact intervals asserted below
     )
     sched = SM2Scheduler(cfg)
 
@@ -194,7 +196,7 @@ def test_search_query_parser():
 
 def test_apkg_importer_on_real_dataset():
     """Verify ApkgImporter directly against Tieng_Nhat_Tong_hop_N1_to_N5.apkg."""
-    apkg_file = r"D:\HUST_Study\2026.1\Web_va_dich_vu_online\Cong_nghe_Web_va_dich_vu_truc_tuyen\Anki_format_datasets\Tieng_Nhat_Tong_hop_N1_to_N5.apkg"
+    apkg_file = str(SAMPLE_APKG)
     if not os.path.exists(apkg_file):
         pytest.skip("Dataset file not found at expected path")
 

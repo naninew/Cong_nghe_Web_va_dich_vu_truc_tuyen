@@ -256,7 +256,8 @@
           <div
             v-if="activeCardModal.rendered"
             class="max-h-64 overflow-y-auto p-4 bg-surface-container-lowest rounded-xl border border-outline-variant/30 text-center"
-            v-html="previewFace === 'front' ? activeCardModal.rendered.front_html : activeCardModal.rendered.back_html"
+            v-html="sanitizeCardHtml(previewFace === 'front' ? activeCardModal.rendered.front_html : activeCardModal.rendered.back_html)"
+            @click="handleAnkiHtmlClick"
           ></div>
         </div>
 
@@ -315,6 +316,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
+import { sanitizeCardHtml, handleAnkiHtmlClick } from '../utils/ankiHtml';
 import { useRoute } from 'vue-router';
 import { useDeckStore } from '../stores/deck';
 import api from '../api/client';

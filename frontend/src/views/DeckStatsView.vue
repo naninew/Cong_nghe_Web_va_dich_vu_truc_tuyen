@@ -343,9 +343,9 @@
         <!-- Rendered Card Output -->
         <div class="p-4 rounded-xl bg-surface-container-low/40 border border-outline-variant/20 text-center max-h-48 overflow-y-auto">
           <div class="text-xs font-bold uppercase text-outline mb-1">Mặt Trước</div>
-          <div v-html="activeCardDetail.rendered?.front_html" class="text-sm font-semibold text-on-surface"></div>
+          <div v-html="sanitizeCardHtml(activeCardDetail.rendered?.front_html)" @click="handleAnkiHtmlClick" class="text-sm font-semibold text-on-surface"></div>
           <div class="text-xs font-bold uppercase text-outline mt-3 mb-1">Mặt Sau</div>
-          <div v-html="activeCardDetail.rendered?.back_html" class="text-xs text-on-surface-variant"></div>
+          <div v-html="sanitizeCardHtml(activeCardDetail.rendered?.back_html)" @click="handleAnkiHtmlClick" class="text-xs text-on-surface-variant"></div>
         </div>
 
         <!-- Card Metrics -->
@@ -434,6 +434,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
+import { sanitizeCardHtml, handleAnkiHtmlClick } from '../utils/ankiHtml';
 import { useRoute } from 'vue-router';
 import api from '../api/client';
 

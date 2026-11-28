@@ -11,7 +11,7 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from backend.app.anki_core import (
+from app.anki_core import (
     CardQueue,
     CardState,
     CardType,
@@ -21,7 +21,7 @@ from backend.app.anki_core import (
     SM2Scheduler,
     TemplateRenderer,
 )
-from backend.app.anki_core.scheduler.base import format_due
+from app.anki_core.scheduler.base import format_due, fuzz_bounds
 
 NOW = 1_800_000_000
 TODAY = 20_833
@@ -78,7 +78,7 @@ def test_preview_matches_schedule(sched):
 
 
 def test_preview_examples_sm2():
-    sched = SM2Scheduler(DeckConfigParams())
+    sched = SM2Scheduler(DeckConfigParams(enable_fuzz=False))
     new = sched.describe_next_intervals(CardState(card_id=1), NOW, TODAY)
     assert new == {"again": "1m", "hard": "6m", "good": "10m", "easy": "4d"}
     relearn = CardState(card_id=1, card_type=CardType.RELEARNING, queue=CardQueue.LEARNING, interval=1, left=1)
@@ -127,6 +127,44 @@ def test_sm2_review_interval_ordering():
             continue
         ivls = sched.review_intervals(card)
         assert card.interval < ivls[Rating.HARD] < ivls[Rating.GOOD] < ivls[Rating.EASY]
+
+
+def test_sm2_overdue_bonus():
+    """A card answered 10 days late was remembered longer -> bigger intervals (Anki v2)."""
+    sched = SM2Scheduler(DeckConfigParams(enable_fuzz=False))
+    on_time = CardState(card_id=1, card_type=CardType.REVIEW, queue=CardQueue.REVIEW,
+                        due=TODAY, interval=10, factor=2500)
+    late = on_time.model_copy(update={"due": TODAY - 10})
+    assert sched.review_intervals(on_time, TODAY) == {Rating.HARD: 12, Rating.GOOD: 25, Rating.EASY: 32}
+    # hard = (10 + 10//4) * 1.2 = 14.4, good = (10 + 5) * 2.5 = 37.5, easy = 20 * 2.5 * 1.3 = 65
+    assert sched.review_intervals(late, TODAY) == {Rating.HARD: 14, Rating.GOOD: 38, Rating.EASY: 65}
+
+
+def test_fuzz_bounds_match_anki():
+    assert fuzz_bounds(1) == (1, 1) and fuzz_bounds(2) == (2, 2)
+    assert fuzz_bounds(4) == (3, 5)        # delta = 1 + 0.15 * 1.5 = 1.225
+    assert fuzz_bounds(25) == (22, 28)     # delta = 1 + 0.675 + 1.3 + 0.25 = 3.225
+    lo, hi = fuzz_bounds(365)
+    assert lo < 365 < hi and hi - lo < 50
+
+
+@pytest.mark.parametrize("make", [lambda c: SM2Scheduler(c), lambda c: FSRSScheduler(c.model_copy(update={"fsrs_enabled": True}))])
+def test_fuzz_is_deterministic_bounded_and_spreads_cards(make):
+    sched = make(DeckConfigParams())
+    plain = make(DeckConfigParams(enable_fuzz=False))
+    goods = set()
+    for cid in range(1, 200):
+        card = CardState(card_id=cid, card_type=CardType.REVIEW, queue=CardQueue.REVIEW, due=TODAY,
+                         interval=30, factor=2500, reps=7, fsrs_stability=30.0, fsrs_difficulty=5.0)
+        a = sched.schedule(card, Rating.GOOD, NOW, TODAY).interval
+        assert a == sched.schedule(card, Rating.GOOD, NOW, TODAY).interval  # same input -> same result
+        base = plain.schedule(card, Rating.GOOD, NOW, TODAY).interval
+        lo, hi = fuzz_bounds(base)
+        assert lo <= a <= hi
+        ivls = [sched.schedule(card, r, NOW, TODAY).interval for r in (Rating.HARD, Rating.GOOD, Rating.EASY)]
+        assert ivls[0] < ivls[1] < ivls[2]
+        goods.add(a)
+    assert len(goods) >= 5, "fuzz should spread cards over several days"
 
 
 def test_sm2_relearning_uses_all_steps():
@@ -196,7 +234,7 @@ def test_switch_fsrs_to_sm2_keeps_progress():
     card = CardState(card_id=1, card_type=CardType.REVIEW, queue=CardQueue.REVIEW,
                      due=TODAY, interval=60, factor=2500, fsrs_stability=60.0, fsrs_difficulty=5.0)
     assert fsrs.schedule(card, Rating.GOOD, NOW, TODAY).interval > 60
-    assert SM2Scheduler(DeckConfigParams()).schedule(card, Rating.GOOD, NOW, TODAY).interval == 150
+    assert SM2Scheduler(DeckConfigParams(enable_fuzz=False)).schedule(card, Rating.GOOD, NOW, TODAY).interval == 150
 
 
 # ---------------------------------------------------------------------------
@@ -274,11 +312,11 @@ def test_hint_ids_are_unique():
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_study_queue_uses_deck_config_and_does_not_loop():
-    from backend.app.main import app
-    from backend.app.db.session import engine, Base, AsyncSessionLocal
-    from backend.app.models.deck import Deck
-    from backend.app.models.notetype import Notetype, NotetypeField, NotetypeTemplate
-    from backend.app.models.card import Card, Note
+    from app.main import app
+    from app.db.session import engine, Base, AsyncSessionLocal
+    from app.models.deck import Deck
+    from app.models.notetype import Notetype, NotetypeField, NotetypeTemplate
+    from app.models.card import Card, Note
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -338,3 +376,12 @@ async def test_study_queue_uses_deck_config_and_does_not_loop():
 
         invalid = await client.post("/api/v1/study/answer", headers=headers, json={"card_id": card["id"], "rating": 7})
         assert invalid.status_code == 422
+
+
+def test_rendered_html_has_no_inline_javascript():
+    """Hint links and audio buttons use data-* attributes (frontend sanitizes with DOMPurify)."""
+    out = R.render_card("{{hint:A}} [sound:a.mp3] {{B}}", "{{FrontSide}}", {"A": "hint", "B": "x"})
+    for html_out in (out["front_html"], out["back_html"]):
+        assert "onclick" not in html_out.lower()
+    assert 'data-hint-target="hint_body_' in out["front_html"]
+    assert 'data-src="/media/u1/a.mp3"' in out["front_html"]
