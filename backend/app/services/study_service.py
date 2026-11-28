@@ -29,6 +29,7 @@ from ..anki_core import (
     CardState,
     DeckConfigParams,
     Rating,
+    ReviewType,
     get_scheduler,
     TemplateRenderer,
 )
@@ -37,6 +38,9 @@ from .deck_service import DeckService
 
 # In-memory store for today's custom daily limit bonuses: key = "{user_id}:{day_num}:{deck_id}"
 _DAILY_BONUS: Dict[str, int] = {}
+
+# Anki "learn ahead limit": when nothing else is due, learning cards due within this window are shown.
+LEARN_AHEAD_SECS = 20 * 60
 
 
 class StudyService:
@@ -214,6 +218,78 @@ class StudyService:
         _DAILY_BONUS[key] = curr + amount
         return _DAILY_BONUS[key]
 
+    # ------------------------------------------------------------------
+    # Deck configuration & card state helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def config_to_params(cfg: Optional[DeckConfig]) -> DeckConfigParams:
+        """Map a DeckConfig DB row to scheduler parameters (defaults when missing)."""
+        if cfg is None:
+            return DeckConfigParams()
+        defaults = DeckConfigParams()
+        return DeckConfigParams(
+            new_per_day=cfg.new_per_day,
+            reviews_per_day=cfg.reviews_per_day,
+            learning_steps=cfg.learning_steps if cfg.learning_steps is not None else defaults.learning_steps,
+            relearning_steps=cfg.relearning_steps if cfg.relearning_steps is not None else defaults.relearning_steps,
+            graduating_interval=cfg.graduating_interval,
+            easy_interval=cfg.easy_interval,
+            starting_ease=cfg.starting_ease,
+            fsrs_enabled=cfg.fsrs_enabled,
+            fsrs_params=cfg.fsrs_params,
+            desired_retention=cfg.desired_retention,
+            leech_threshold=cfg.leech_threshold,
+            leech_action=cfg.leech_action,
+        )
+
+    @staticmethod
+    async def load_deck_config(
+        db: AsyncSession, user_id: str, deck_id: Optional[int]
+    ) -> DeckConfigParams:
+        """Load the scheduling options attached to a deck (falls back to Anki defaults)."""
+        if not deck_id:
+            return DeckConfigParams()
+        deck = await db.get(Deck, deck_id)
+        if not deck or deck.user_id != user_id or not deck.config_id:
+            return DeckConfigParams()
+        cfg = await db.get(DeckConfig, deck.config_id)
+        if not cfg or cfg.user_id != user_id:
+            return DeckConfigParams()
+        return StudyService.config_to_params(cfg)
+
+    @staticmethod
+    def card_to_state(card: Card) -> CardState:
+        return CardState(
+            card_id=card.id,
+            card_type=card.type,
+            queue=card.queue,
+            due=card.due,
+            interval=card.ivl,
+            factor=card.factor,
+            reps=card.reps,
+            lapses=card.lapses,
+            left=card.left,
+            fsrs_stability=card.fsrs_stability,
+            fsrs_difficulty=card.fsrs_difficulty,
+        )
+
+    @staticmethod
+    def _learning_due_condition(now_ts: int, today_days: int, ahead_secs: int = 0):
+        """Intraday learning (queue 1, due = timestamp) or interday learning (queue 3, due = day)."""
+        return or_(
+            and_(Card.queue == 1, Card.due <= now_ts + ahead_secs),
+            and_(Card.queue == 3, Card.due <= today_days),
+        )
+
+    @staticmethod
+    def _uses_raw_template(qfmt: str, afmt: str) -> bool:
+        """Cards whose meaning lives in the template itself cannot be shown as clean vocab data."""
+        tpl = f"{qfmt}\n{afmt}".lower()
+        return "{{cloze:" in tpl or "{{type:" in tpl
+
+    # ------------------------------------------------------------------
+    # Queue
+    # ------------------------------------------------------------------
     @staticmethod
     async def get_next_queued_card(
         db: AsyncSession,
@@ -222,6 +298,7 @@ class StudyService:
         filter_mode: str = "all",
     ) -> StudyQueueResponse:
         now_ts, today_days, day_start_dt = StudyService.get_day_timing()
+        cfg_limits = await StudyService.load_deck_config(db, user_id, deck_id)
 
         # Build filter conditions
         conditions = [Card.user_id == user_id]
@@ -229,137 +306,89 @@ class StudyService:
             deck_ids = await DeckService.get_deck_and_child_ids(db, user_id, deck_id)
             conditions.append(Card.deck_id.in_(deck_ids))
 
-        # Query Revlog count for cards studied today since 4:00 AM
-        revlog_conditions = [
+        # Revlog entries today (since 4:00 AM) for the cards in scope; quiz-game answers excluded.
+        revlog_scope = [
             Revlog.user_id == user_id,
-            Revlog.created_at >= day_start_dt,
+            Revlog.review_type != int(ReviewType.GAME_QUIZ),
+            *conditions,
         ]
-        new_done_stmt = select(func.count(Revlog.id)).where(
-            and_(*revlog_conditions, Revlog.last_ivl == 0)
+
+        # New cards introduced today = cards whose FIRST ever review happened today.
+        # (Counting every learning-step answer would burn the quota 2-3x too fast.)
+        first_seen_today = (
+            select(Revlog.card_id)
+            .join(Card, Card.id == Revlog.card_id)
+            .where(and_(*revlog_scope))
+            .group_by(Revlog.card_id)
+            .having(func.min(Revlog.created_at) >= day_start_dt)
+            .subquery()
         )
-        new_done_res = await db.execute(new_done_stmt)
-        new_done_today = new_done_res.scalar() or 0
+        new_done_today = (await db.execute(select(func.count()).select_from(first_seen_today))).scalar() or 0
 
-        review_done_stmt = select(func.count(Revlog.id)).where(
-            and_(*revlog_conditions, Revlog.last_ivl > 0)
-        )
-        review_done_res = await db.execute(review_done_stmt)
-        review_done_today = review_done_res.scalar() or 0
-
-        # Anki Daily Limits: new_per_day default 20, review_per_day default 200
-        new_per_day = 20
-        review_per_day = 200
-
-        # Include custom bonus for today
-        bonus_key = f"{user_id}:{today_days}:{deck_id or 0}"
-        bonus_new = _DAILY_BONUS.get(bonus_key, 0)
-        effective_new_limit = new_per_day + bonus_new
-
-        remaining_new_quota = max(0, effective_new_limit - new_done_today)
-        remaining_review_quota = max(0, review_per_day - review_done_today)
-
-        # Count available cards in DB
-        db_count_stmt = (
-            select(
-                Card.queue,
-                func.count(Card.id).label("cnt"),
+        review_done_stmt = (
+            select(func.count(Revlog.id))
+            .join(Card, Card.id == Revlog.card_id)
+            .where(
+                and_(
+                    *revlog_scope,
+                    Revlog.created_at >= day_start_dt,
+                    Revlog.review_type == int(ReviewType.REVIEW),
+                )
             )
-            .where(and_(*conditions, Card.queue.in_([0, 1, 2, 3])))
-            .group_by(Card.queue)
         )
-        db_res = await db.execute(db_count_stmt)
-        db_rows = db_res.all()
+        review_done_today = (await db.execute(review_done_stmt)).scalar() or 0
 
-        db_counts = {"new": 0, "learning": 0, "due": 0}
-        for q, cnt in db_rows:
-            if q == 0:
-                db_counts["new"] = cnt
-            elif q in (1, 3):
-                db_counts["learning"] += cnt
-            elif q == 2:
-                db_counts["due"] += cnt
+        # Daily limits come from the deck options
+        bonus_key = f"{user_id}:{today_days}:{deck_id or 0}"
+        effective_new_limit = cfg_limits.new_per_day + _DAILY_BONUS.get(bonus_key, 0)
+        remaining_new_quota = max(0, effective_new_limit - new_done_today)
+        remaining_review_quota = max(0, cfg_limits.reviews_per_day - review_done_today)
 
-        # Review cards actually due today (queue=2, due <= today_days)
-        due_review_stmt = select(func.count(Card.id)).where(
-            and_(*conditions, Card.queue == 2, Card.due <= today_days)
+        async def count(*extra) -> int:
+            return (await db.execute(select(func.count(Card.id)).where(and_(*conditions, *extra)))).scalar() or 0
+
+        new_available = await count(Card.queue == 0)
+        learning_available = await count(
+            StudyService._learning_due_condition(now_ts, today_days, LEARN_AHEAD_SECS)
         )
-        due_review_res = await db.execute(due_review_stmt)
-        actual_due_today = due_review_res.scalar() or 0
+        due_available = await count(Card.queue == 2, Card.due <= today_days)
 
-        # Calculate user-facing remaining counters
         user_counts = {
-            "new": min(db_counts["new"], remaining_new_quota),
-            "learning": db_counts["learning"],
-            "due": min(actual_due_today, remaining_review_quota),
+            "new": min(new_available, remaining_new_quota),
+            "learning": learning_available,
+            "due": min(due_available, remaining_review_quota),
         }
 
-        # Gather card with Anki priority:
-        # 1. Intraday Learning cards (queue in (1, 3), due <= now_ts)
-        # 2. Review cards due today (queue == 2, due <= today_days) up to remaining_review_quota
-        # 3. New cards (queue == 0) up to remaining_new_quota
+        load_opts = (
+            selectinload(Card.note).selectinload(Note.notetype).selectinload(Notetype.templates),
+            selectinload(Card.note).selectinload(Note.notetype).selectinload(Notetype.fields),
+            selectinload(Card.deck),
+        )
+
+        async def first(*where, order_by) -> Optional[Card]:
+            stmt = select(Card).options(*load_opts).where(and_(*conditions, *where)).order_by(*order_by).limit(1)
+            return (await db.execute(stmt)).scalars().first()
+
+        # Anki priority:
+        # 1. Learning cards due now   2. Reviews due today   3. New cards
+        # 4. Learn-ahead: learning cards due within the next 20 minutes, so the session
+        #    does not end while the last learning card is only a minute away.
         card = None
-
         if filter_mode == "lapsed_only":
-            lapsed_stmt = (
-                select(Card)
-                .options(
-                    selectinload(Card.note).selectinload(Note.notetype).selectinload(Notetype.templates),
-                    selectinload(Card.note).selectinload(Note.notetype).selectinload(Notetype.fields),
-                    selectinload(Card.deck),
-                )
-                .where(and_(*conditions, Card.lapses > 0))
-                .order_by(Card.lapses.desc(), Card.due)
-                .limit(1)
-            )
-            res = await db.execute(lapsed_stmt)
-            card = res.scalars().first()
+            card = await first(Card.lapses > 0, order_by=(Card.lapses.desc(), Card.due))
         else:
-            # Step 1: Learning cards due right now
-            learn_stmt = (
-                select(Card)
-                .options(
-                    selectinload(Card.note).selectinload(Note.notetype).selectinload(Notetype.templates),
-                    selectinload(Card.note).selectinload(Note.notetype).selectinload(Notetype.fields),
-                    selectinload(Card.deck),
-                )
-                .where(and_(*conditions, Card.queue.in_([1, 3]), Card.due <= now_ts))
-                .order_by(Card.due)
-                .limit(1)
+            card = await first(
+                StudyService._learning_due_condition(now_ts, today_days),
+                order_by=(Card.queue, Card.due),
             )
-            res = await db.execute(learn_stmt)
-            card = res.scalars().first()
-
-            # Step 2: Review cards due today (if review quota remains)
             if not card and filter_mode in ("all", "due_only") and remaining_review_quota > 0:
-                review_stmt = (
-                    select(Card)
-                    .options(
-                        selectinload(Card.note).selectinload(Note.notetype).selectinload(Notetype.templates),
-                        selectinload(Card.note).selectinload(Note.notetype).selectinload(Notetype.fields),
-                        selectinload(Card.deck),
-                    )
-                    .where(and_(*conditions, Card.queue == 2, Card.due <= today_days))
-                    .order_by(Card.due)
-                    .limit(1)
-                )
-                res = await db.execute(review_stmt)
-                card = res.scalars().first()
-
-            # Step 3: New cards (if new quota remains)
+                card = await first(Card.queue == 2, Card.due <= today_days, order_by=(Card.due,))
             if not card and filter_mode in ("all", "new_only") and remaining_new_quota > 0:
-                new_stmt = (
-                    select(Card)
-                    .options(
-                        selectinload(Card.note).selectinload(Note.notetype).selectinload(Notetype.templates),
-                        selectinload(Card.note).selectinload(Note.notetype).selectinload(Notetype.fields),
-                        selectinload(Card.deck),
-                    )
-                    .where(and_(*conditions, Card.queue == 0))
-                    .order_by(Card.id)
-                    .limit(1)
+                card = await first(Card.queue == 0, order_by=(Card.due, Card.id))
+            if not card:
+                card = await first(
+                    Card.queue == 1, Card.due <= now_ts + LEARN_AHEAD_SECS, order_by=(Card.due,)
                 )
-                res = await db.execute(new_stmt)
-                card = res.scalars().first()
 
         if not card:
             return StudyQueueResponse(card=None, remaining_counts=user_counts)
@@ -375,51 +404,50 @@ class StudyService:
         if not template and notetype.templates:
             template = notetype.templates[0]
 
-        # Field names mapping
         fields_dict: Dict[str, str] = {}
         ordered_fields = sorted(notetype.fields, key=lambda f: f.ord)
         for idx, fld in enumerate(ordered_fields):
-            val = note.fields[idx] if idx < len(note.fields) else ""
-            fields_dict[fld.name] = val
+            fields_dict[fld.name] = note.fields[idx] if idx < len(note.fields) else ""
 
+        qfmt = template.qfmt if template else "{{Front}}"
+        afmt = template.afmt if template else "{{FrontSide}}<hr id=answer>{{Back}}"
+        deck_name = card.deck.name if card.deck else "Default"
         renderer = TemplateRenderer(media_base_url=f"/media/{user_id}")
         rendered_dict = renderer.render_card(
-            qfmt=template.qfmt if template else "{{Front}}",
-            afmt=template.afmt if template else "{{Back}}",
+            qfmt=qfmt,
+            afmt=afmt,
             fields=fields_dict,
             css=notetype.css or "",
             card_ord=card.ord,
+            special_fields={
+                "Tags": " ".join(note.tags or []),
+                "Deck": deck_name,
+                "Subdeck": deck_name.split("::")[-1],
+                "Card": template.name if template else f"Card {card.ord + 1}",
+                "Type": notetype.name,
+                "CardFlag": f"flag{card.flags}" if card.flags else "",
+            },
         )
 
-        # Extract clean structured card data
-        clean_data = StudyService.extract_clean_card_data(
-            card=card,
-            note=note,
-            user_id=user_id,
-            media_dir=settings.MEDIA_DIR,
-        )
+        # Structured vocab view only when the card does not depend on template logic (cloze, type-in)
+        clean_data = None
+        if not StudyService._uses_raw_template(qfmt, afmt):
+            clean_data = StudyService.extract_clean_card_data(
+                card=card, note=note, user_id=user_id, media_dir=settings.MEDIA_DIR
+            )
+            if not clean_data.term:
+                clean_data = None
 
-        # Scheduler preview intervals
-        cfg_params = DeckConfigParams()
-        sched = get_scheduler(cfg_params)
-        card_state = CardState(
-            card_id=card.id,
-            card_type=card.type,
-            queue=card.queue,
-            due=card.due,
-            interval=card.ivl,
-            factor=card.factor,
-            reps=card.reps,
-            lapses=card.lapses,
-            fsrs_stability=card.fsrs_stability,
-            fsrs_difficulty=card.fsrs_difficulty,
+        # Interval previews use the card's own deck options and are derived from schedule()
+        card_cfg = await StudyService.load_deck_config(db, user_id, card.deck_id)
+        intervals = get_scheduler(card_cfg).describe_next_intervals(
+            StudyService.card_to_state(card), now_ts, today_days
         )
-        intervals = sched.describe_next_intervals(card_state, now_ts, today_days)
 
         card_detail = CardDetailResponse(
             id=card.id,
             deck_id=card.deck_id,
-            deck_name=card.deck.name if card.deck else "Default",
+            deck_name=deck_name,
             note_id=card.note_id,
             ord=card.ord,
             type=card.type,
@@ -440,11 +468,11 @@ class StudyService:
             next_intervals=intervals,
         )
 
-        return StudyQueueResponse(
-            card=card_detail,
-            remaining_counts=user_counts,
-        )
+        return StudyQueueResponse(card=card_detail, remaining_counts=user_counts)
 
+    # ------------------------------------------------------------------
+    # Answer
+    # ------------------------------------------------------------------
     @staticmethod
     async def submit_card_answer(
         db: AsyncSession,
@@ -453,7 +481,11 @@ class StudyService:
         rating_val: int,
         time_taken_ms: int = 0,
     ) -> CardAnswerResponse:
-        stmt = select(Card).where(Card.id == card_id, Card.user_id == user.id)
+        stmt = (
+            select(Card)
+            .options(selectinload(Card.note))
+            .where(Card.id == card_id, Card.user_id == user.id)
+        )
         res = await db.execute(stmt)
         card = res.scalars().first()
         if not card:
@@ -461,23 +493,9 @@ class StudyService:
 
         now_ts, today_days, _ = StudyService.get_day_timing()
 
-        # Load deck config params
-        cfg_params = DeckConfigParams()
+        cfg_params = await StudyService.load_deck_config(db, user.id, card.deck_id)
         sched = get_scheduler(cfg_params)
-
-        card_state = CardState(
-            card_id=card.id,
-            card_type=card.type,
-            queue=card.queue,
-            due=card.due,
-            interval=card.ivl,
-            factor=card.factor,
-            reps=card.reps,
-            lapses=card.lapses,
-            left=card.left,
-            fsrs_stability=card.fsrs_stability,
-            fsrs_difficulty=card.fsrs_difficulty,
-        )
+        card_state = StudyService.card_to_state(card)
 
         schedule_res = sched.schedule(
             card=card_state,
@@ -496,33 +514,45 @@ class StudyService:
         card.reps = schedule_res.reps
         card.lapses = schedule_res.lapses
         card.left = schedule_res.left
-        card.fsrs_stability = schedule_res.fsrs_stability
-        card.fsrs_difficulty = schedule_res.fsrs_difficulty
+        # SM-2 leaves FSRS memory untouched so switching back to FSRS later keeps it
+        if schedule_res.fsrs_stability is not None:
+            card.fsrs_stability = schedule_res.fsrs_stability
+            card.fsrs_difficulty = schedule_res.fsrs_difficulty
+        elif not cfg_params.fsrs_enabled:
+            # Memory state would be stale after SM-2 reviews -> re-derive from SM-2 on next FSRS use
+            card.fsrs_stability = None
+            card.fsrs_difficulty = None
 
-        # Insert Revlog
-        revlog = Revlog(
-            user_id=user.id,
-            card_id=card.id,
-            rating=rating_val,
-            new_ivl=schedule_res.interval,
-            last_ivl=card_state.interval,
-            factor=schedule_res.factor,
-            time_taken_ms=time_taken_ms,
-            review_type=schedule_res.review_type,
-            created_at=datetime.utcnow(),
+        if schedule_res.is_leech:
+            tags = list(card.note.tags or []) if card.note else []
+            if "leech" not in tags:
+                tags.append("leech")
+                card.note.tags = tags
+
+        db.add(
+            Revlog(
+                user_id=user.id,
+                card_id=card.id,
+                rating=rating_val,
+                new_ivl=schedule_res.interval,
+                last_ivl=card_state.interval,
+                factor=schedule_res.factor,
+                time_taken_ms=time_taken_ms,
+                review_type=int(schedule_res.review_type),
+                created_at=datetime.utcnow(),
+            )
         )
-        db.add(revlog)
 
-        # Update User XP and Streak
+        # XP and streak; "today" follows the same 4:00 AM (UTC+7) rollover as the queue
         xp_gain = 15 if rating_val > 1 else 5
         user.xp += xp_gain
-        today_date = date.today()
-        if user.last_study_date != today_date:
-            if user.last_study_date == today_date - timedelta(days=1):
+        study_day = date(1970, 1, 1) + timedelta(days=today_days)
+        if user.last_study_date != study_day:
+            if user.last_study_date == study_day - timedelta(days=1):
                 user.streak_days += 1
             else:
                 user.streak_days = 1
-            user.last_study_date = today_date
+            user.last_study_date = study_day
 
         await db.commit()
 

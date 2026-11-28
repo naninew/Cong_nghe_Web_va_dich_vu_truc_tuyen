@@ -1,10 +1,16 @@
 """
-Free Spaced Repetition Scheduler (FSRS v4.5) Implementation.
-Uses human memory retention model with Stability (S), Difficulty (D), and Retrievability (R).
+Free Spaced Repetition Scheduler (FSRS-5) Implementation.
+
+Memory model: Stability (S, days until R drops to 90%), Difficulty (D, 1..10),
+Retrievability (R). 19 parameters, same layout as Anki 24.11+ / py-fsrs 4.x.
+
+Like Anki, FSRS only decides *review* intervals; short-term learning and relearning
+still go through the deck's (re)learning steps (minutes), during which S/D are updated
+with the FSRS-5 short-term stability formula.
 """
 
 import math
-from typing import Dict, List, Optional
+from typing import Dict, Optional, Tuple
 from .base import BaseScheduler
 from ..models import (
     CardState,
@@ -16,78 +22,128 @@ from ..models import (
     ScheduleResult,
 )
 
-# Standard FSRS-4.5 default 19 weights
+# FSRS-5 default parameters (py-fsrs 4.x / Anki 24.11)
 DEFAULT_FSRS_WEIGHTS = [
-    0.4, 0.6, 2.4, 5.8, 4.93, 0.94, 0.86, 0.01, 1.49, 0.14,
-    0.94, 2.18, 0.05, 0.34, 1.26, 0.29, 2.61, 0.42, 0.28,
+    0.40255, 1.18385, 3.173, 15.69105, 7.1949, 0.5345, 1.4604, 0.0046, 1.54575, 0.1192,
+    1.01925, 1.9395, 0.11, 0.29605, 2.2698, 0.2315, 2.9898, 0.51655, 0.6621,
 ]
+DECAY = -0.5
+FACTOR = 19.0 / 81.0  # chosen so that R(t=S) = 0.9
 
 
 class FSRSScheduler(BaseScheduler):
-    """Free Spaced Repetition Scheduler (FSRS v4.5)."""
+    """Free Spaced Repetition Scheduler (FSRS-5)."""
 
     def __init__(self, config: DeckConfigParams):
         super().__init__(config)
-        self.w = config.fsrs_params if config.fsrs_params and len(config.fsrs_params) >= 19 else DEFAULT_FSRS_WEIGHTS
-        self.desired_retention = config.desired_retention if config.desired_retention else 0.90
+        params = config.fsrs_params
+        self.w = list(params) if params and len(params) == 19 else list(DEFAULT_FSRS_WEIGHTS)
+        dr = config.desired_retention or 0.90
+        self.desired_retention = min(0.99, max(0.70, dr))
 
+    # ------------------------------------------------------------------
+    # FSRS-5 formulas
+    # ------------------------------------------------------------------
     def retrievability(self, elapsed_days: float, stability: float) -> float:
-        """Calculate retrievability probability R(t, S)."""
+        """R(t, S) = (1 + FACTOR * t / S) ^ DECAY"""
         if stability <= 0.0:
             return 0.0
-        return math.pow(1.0 + (19.0 / 81.0) * (elapsed_days / stability), -0.5)
+        return math.pow(1.0 + FACTOR * max(0.0, elapsed_days) / stability, DECAY)
+
+    def _interval_per_stability(self) -> float:
+        """Days of interval per day of stability at the desired retention (=1.0 at 90%)."""
+        return (math.pow(self.desired_retention, 1.0 / DECAY) - 1.0) / FACTOR
 
     def next_interval(self, stability: float) -> int:
-        """Calculate interval in days to reach desired retention."""
-        if stability <= 0.0:
-            return 1
-        ivl = stability * (math.log(self.desired_retention) / math.log(0.90))
-        return max(1, min(self.config.maximum_interval, round(ivl)))
+        """Interval in days so that R falls to the desired retention."""
+        ivl = stability * self._interval_per_stability()
+        return int(max(1, min(self.config.maximum_interval, round(ivl))))
 
     def init_stability(self, rating: Rating) -> float:
-        """Initial stability for first review."""
-        idx = rating.value - 1
-        return max(0.1, self.w[idx])
+        return max(0.1, self.w[rating.value - 1])
+
+    def _init_difficulty_raw(self, rating: Rating) -> float:
+        return self.w[4] - math.exp(self.w[5] * (rating.value - 1)) + 1.0
 
     def init_difficulty(self, rating: Rating) -> float:
-        """Initial difficulty on a scale from 1.0 to 10.0."""
-        d0 = self.w[4] - math.exp(self.w[5] * (rating.value - 1)) + 1.0
-        return max(1.0, min(10.0, d0))
+        return _clamp_d(self._init_difficulty_raw(rating))
 
     def next_difficulty(self, curr_d: float, rating: Rating) -> float:
-        """Update difficulty with mean reversion."""
-        d0_good = self.init_difficulty(Rating.GOOD)
+        """Linear damping toward 10, then mean reversion toward D0(Easy)."""
         delta = -self.w[6] * (rating.value - 3)
-        next_d = self.w[7] * d0_good + (1.0 - self.w[7]) * (curr_d + delta)
-        return max(1.0, min(10.0, next_d))
+        damped = curr_d + delta * (10.0 - curr_d) / 9.0
+        reverted = self.w[7] * self._init_difficulty_raw(Rating.EASY) + (1.0 - self.w[7]) * damped
+        return _clamp_d(reverted)
 
-    def next_recall_stability(
-        self, curr_d: float, curr_s: float, r: float, rating: Rating
-    ) -> float:
-        """Calculate new stability on successful recall (Hard, Good, Easy)."""
+    def next_recall_stability(self, d: float, s: float, r: float, rating: Rating) -> float:
         hard_penalty = self.w[15] if rating == Rating.HARD else 1.0
         easy_bonus = self.w[16] if rating == Rating.EASY else 1.0
-        
-        factor = (
+        inc = (
             math.exp(self.w[8])
-            * (11.0 - curr_d)
-            * math.pow(curr_s, -self.w[9])
+            * (11.0 - d)
+            * math.pow(s, -self.w[9])
             * (math.exp(self.w[10] * (1.0 - r)) - 1.0)
             * hard_penalty
             * easy_bonus
         )
-        return max(0.1, curr_s * (1.0 + factor))
+        return max(0.1, s * (1.0 + inc))
 
-    def next_forget_stability(self, curr_d: float, curr_s: float, r: float) -> float:
-        """Calculate new stability on lapse (Again)."""
+    def next_forget_stability(self, d: float, s: float, r: float) -> float:
         s_forget = (
             self.w[11]
-            * math.pow(curr_d, -self.w[12])
-            * (math.pow(curr_s + 1.0, self.w[13]) - 1.0)
+            * math.pow(d, -self.w[12])
+            * (math.pow(s + 1.0, self.w[13]) - 1.0)
             * math.exp(self.w[14] * (1.0 - r))
         )
-        return max(0.1, min(curr_s, s_forget))
+        s_min = s / math.exp(self.w[17] * self.w[18])
+        return max(0.1, min(s_forget, s_min))
 
+    def short_term_stability(self, s: float, rating: Rating) -> float:
+        """Same-day review (learning/relearning steps)."""
+        inc = math.exp(self.w[17] * (rating.value - 3 + self.w[18]))
+        if rating >= Rating.GOOD:
+            inc = max(inc, 1.0)
+        return max(0.1, s * inc)
+
+    # ------------------------------------------------------------------
+    # Memory state helpers
+    # ------------------------------------------------------------------
+    def memory_from_sm2(self, card: CardState) -> Tuple[float, float]:
+        """
+        Derive (S, D) for a card that was scheduled by SM-2 and has no FSRS state yet,
+        so switching algorithms keeps the card's progress instead of resetting it.
+          * S: stability that would produce the card's current interval at desired retention.
+          * D: mapped from ease (250% -> 5, 130% -> 10, >=350% -> 1).
+        """
+        ivl = max(1, card.interval)
+        s = max(0.1, ivl / self._interval_per_stability())
+        ease = (card.factor or 2500) / 1000.0
+        d = _clamp_d(5.0 + (2.5 - ease) * (5.0 / 1.2))
+        return s, d
+
+    @staticmethod
+    def elapsed_days(card: CardState, today_day: int) -> int:
+        """Days since last review. For review cards: last review day = due - interval."""
+        if card.card_type == CardType.REVIEW and card.interval > 0:
+            return max(0, today_day - (card.due - card.interval))
+        return 0
+
+    def _memory_after(
+        self, s: Optional[float], d: Optional[float], rating: Rating, elapsed: int, short_term: bool
+    ) -> Tuple[float, float]:
+        if s is None or d is None:
+            return self.init_stability(rating), self.init_difficulty(rating)
+        new_d = self.next_difficulty(d, rating)
+        if short_term:
+            return self.short_term_stability(s, rating), new_d
+        r = self.retrievability(elapsed, s)
+        if rating == Rating.AGAIN:
+            return self.next_forget_stability(d, s, r), new_d
+        return self.next_recall_stability(d, s, r, rating), new_d
+
+    # ------------------------------------------------------------------
+    # Scheduling
+    # ------------------------------------------------------------------
     def schedule(
         self,
         card: CardState,
@@ -97,97 +153,82 @@ class FSRSScheduler(BaseScheduler):
         time_taken_ms: int = 0,
     ) -> ScheduleResult:
         cfg = self.config
-        reps = card.reps + 1
+        ct = card.card_type
         lapses = card.lapses
         is_leech = False
+        factor = card.factor or cfg.starting_ease
 
-        if card.card_type == CardType.NEW or card.fsrs_stability is None:
-            # First learning event
-            new_s = self.init_stability(rating)
-            new_d = self.init_difficulty(rating)
-            if rating == Rating.AGAIN:
-                interval = 1
-                due = today_day + 1
-                queue = CardQueue.LEARNING
-                card_type = CardType.LEARNING
+        s, d = card.fsrs_stability, card.fsrs_difficulty
+        if (s is None or d is None) and ct in (CardType.REVIEW, CardType.RELEARNING) and card.interval > 0:
+            s, d = self.memory_from_sm2(card)  # switched from SM-2: keep progress
+        if ct == CardType.NEW:
+            s, d = None, None
+
+        elapsed = self.elapsed_days(card, today_day)
+        short_term = ct in (CardType.LEARNING, CardType.RELEARNING) or (ct == CardType.REVIEW and elapsed == 0)
+        new_s, new_d = self._memory_after(s, d, rating, elapsed, short_term)
+
+        def learning(delay_min: float, left: int, new_type: CardType, ivl: int) -> dict:
+            return dict(card_type=new_type, queue=CardQueue.LEARNING,
+                        due=now_ts + int(round(delay_min * 60)), left=left, interval=ivl)
+
+        def review(ivl: int) -> dict:
+            return dict(card_type=CardType.REVIEW, queue=CardQueue.REVIEW,
+                        due=today_day + ivl, interval=ivl, left=0)
+
+        if ct in (CardType.NEW, CardType.LEARNING, CardType.RELEARNING):
+            relearn = ct == CardType.RELEARNING
+            review_type = ReviewType.RELEARN if relearn else ReviewType.LEARN
+            steps = self.relearning_steps if relearn else self.learning_steps
+            left = len(steps) if ct == CardType.NEW else card.left
+            tr = None if (rating == Rating.EASY or not steps) else self.step_transition(steps, left, rating)
+            if tr is None:
+                state = review(self.next_interval(new_s))
             else:
-                interval = self.next_interval(new_s)
-                due = today_day + interval
-                queue = CardQueue.REVIEW
-                card_type = CardType.REVIEW
+                state = learning(tr[0], tr[1], ct if relearn else CardType.LEARNING, 0 if not relearn else card.interval)
         else:
-            curr_s = card.fsrs_stability
-            curr_d = card.fsrs_difficulty if card.fsrs_difficulty is not None else 5.0
-            
-            # Days since card was last scheduled / elapsed
-            elapsed = max(0, today_day - (card.due - card.interval)) if card.interval > 0 else 1
-            r = self.retrievability(elapsed, curr_s)
-
-            new_d = self.next_difficulty(curr_d, rating)
-
+            review_type = ReviewType.REVIEW
             if rating == Rating.AGAIN:
                 lapses += 1
-                if lapses >= cfg.leech_threshold:
-                    is_leech = True
-                new_s = self.next_forget_stability(curr_d, curr_s, r)
-                interval = 1
-                due = today_day + 1
-                queue = (
-                    CardQueue.SUSPENDED
-                    if (is_leech and cfg.leech_action == "suspend")
-                    else CardQueue.LEARNING
-                )
-                card_type = CardType.RELEARNING
+                is_leech = self.is_leech(lapses)
+                lapse_ivl = self.next_interval(new_s)
+                steps = self.relearning_steps
+                state = (learning(steps[0], len(steps), CardType.RELEARNING, lapse_ivl)
+                         if steps else review(lapse_ivl))
             else:
-                new_s = self.next_recall_stability(curr_d, curr_s, r, rating)
-                interval = self.next_interval(new_s)
-                due = today_day + interval
-                queue = CardQueue.REVIEW
-                card_type = CardType.REVIEW
+                state = review(self._ordered_review_intervals(s, d, elapsed, short_term)[rating])
+
+        if is_leech and cfg.leech_action == "suspend":
+            state["queue"] = CardQueue.SUSPENDED
 
         return ScheduleResult(
             card_id=card.card_id,
             rating=rating,
-            card_type=card_type,
-            queue=queue,
-            due=due,
-            interval=interval,
-            factor=card.factor,
-            reps=reps,
+            factor=factor,
+            reps=card.reps + 1,
             lapses=lapses,
-            left=0,
-            fsrs_stability=round(new_s, 2),
-            fsrs_difficulty=round(new_d, 2),
+            fsrs_stability=round(new_s, 4),
+            fsrs_difficulty=round(new_d, 4),
             time_taken_ms=time_taken_ms,
-            review_type=ReviewType.REVIEW if card.card_type == CardType.REVIEW else ReviewType.LEARN,
+            review_type=review_type,
             is_leech=is_leech,
+            **state,
         )
 
-    def describe_next_intervals(
-        self, card: CardState, now_ts: int, today_day: int
-    ) -> Dict[str, str]:
-        """Describe next intervals for 4 ratings under FSRS."""
-        if card.fsrs_stability is None:
-            return {
-                "again": "< 10m",
-                "hard": f"{self.next_interval(self.init_stability(Rating.HARD))}d",
-                "good": f"{self.next_interval(self.init_stability(Rating.GOOD))}d",
-                "easy": f"{self.next_interval(self.init_stability(Rating.EASY))}d",
-            }
-        
-        curr_s = card.fsrs_stability
-        curr_d = card.fsrs_difficulty or 5.0
-        elapsed = max(0, today_day - (card.due - card.interval)) if card.interval > 0 else 1
-        r = self.retrievability(elapsed, curr_s)
-
-        s_again = self.next_forget_stability(curr_d, curr_s, r)
-        s_hard = self.next_recall_stability(curr_d, curr_s, r, Rating.HARD)
-        s_good = self.next_recall_stability(curr_d, curr_s, r, Rating.GOOD)
-        s_easy = self.next_recall_stability(curr_d, curr_s, r, Rating.EASY)
-
-        return {
-            "again": "< 10m",
-            "hard": f"{self.next_interval(s_hard)}d",
-            "good": f"{self.next_interval(s_good)}d",
-            "easy": f"{self.next_interval(s_easy)}d",
+    def _ordered_review_intervals(
+        self, s: Optional[float], d: Optional[float], elapsed: int, short_term: bool
+    ) -> Dict[Rating, int]:
+        """Hard/Good/Easy intervals with Anki's guarantee hard <= good < easy."""
+        ivls = {
+            g: self.next_interval(self._memory_after(s, d, g, elapsed, short_term)[0])
+            for g in (Rating.HARD, Rating.GOOD, Rating.EASY)
         }
+        hard = min(ivls[Rating.HARD], ivls[Rating.GOOD])
+        good = max(ivls[Rating.GOOD], hard + 1)
+        easy = max(ivls[Rating.EASY], good + 1)
+        cap = self.config.maximum_interval
+        return {Rating.HARD: min(hard, cap), Rating.GOOD: min(good, cap), Rating.EASY: min(easy, cap)}
+
+
+def _clamp_d(d: float) -> float:
+    return max(1.0, min(10.0, d))

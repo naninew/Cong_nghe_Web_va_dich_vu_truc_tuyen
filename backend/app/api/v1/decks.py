@@ -11,8 +11,14 @@ from sqlalchemy.future import select
 
 from ...db.session import get_db
 from ...models.user import User
-from ...models.deck import Deck
-from ...schemas.deck import DeckTreeResponse, DeckCreateRequest, DeckUpdateRequest
+from ...models.deck import Deck, DeckConfig
+from ...schemas.deck import (
+    DeckTreeResponse,
+    DeckCreateRequest,
+    DeckUpdateRequest,
+    DeckConfigSchema,
+    DeckConfigUpdateRequest,
+)
 from ...services.deck_service import DeckService
 from ...core.deps import get_current_user
 
@@ -104,6 +110,69 @@ async def update_deck(
         "description": deck.description or "",
         "config_id": deck.config_id,
     }
+
+
+async def _get_owned_deck(db: AsyncSession, user: User, deck_id: int) -> Deck:
+    res = await db.execute(select(Deck).where(Deck.id == deck_id, Deck.user_id == user.id))
+    deck = res.scalars().first()
+    if not deck:
+        raise HTTPException(status_code=404, detail="Deck not found")
+    return deck
+
+
+async def _get_deck_config(db: AsyncSession, user: User, deck: Deck):
+    if not deck.config_id:
+        return None
+    cfg = await db.get(DeckConfig, deck.config_id)
+    return cfg if cfg and cfg.user_id == user.id else None
+
+
+@router.get("/{deck_id}/config", response_model=DeckConfigSchema)
+async def get_deck_config(
+    deck_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Scheduling options of a deck (defaults if the deck has no options preset yet)."""
+    deck = await _get_owned_deck(db, user, deck_id)
+    cfg = await _get_deck_config(db, user, deck)
+    if not cfg:
+        return DeckConfigSchema()
+    return DeckConfigSchema.model_validate(cfg, from_attributes=True)
+
+
+@router.put("/{deck_id}/config", response_model=DeckConfigSchema)
+async def update_deck_config(
+    deck_id: int,
+    req: DeckConfigUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Update a deck's scheduling options, e.g. {"fsrs_enabled": true} to switch SM-2 -> FSRS.
+    Creates an options preset for the deck on first use.
+    """
+    deck = await _get_owned_deck(db, user, deck_id)
+    cfg = await _get_deck_config(db, user, deck)
+    if not cfg:
+        defaults = DeckConfigSchema()
+        cfg = DeckConfig(
+            user_id=user.id,
+            **defaults.model_dump(exclude={"id", "name"}),
+            name=f"{deck.name} options",
+        )
+        db.add(cfg)
+        await db.flush()
+        deck.config_id = cfg.id
+
+    for key, value in req.model_dump(exclude_unset=True).items():
+        if value is None and key != "fsrs_params":
+            continue
+        setattr(cfg, key, value)
+
+    await db.commit()
+    await db.refresh(cfg)
+    return DeckConfigSchema.model_validate(cfg, from_attributes=True)
 
 
 @router.delete("/{deck_id}")

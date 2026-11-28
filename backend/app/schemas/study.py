@@ -4,7 +4,7 @@ Card, Study, Game, and Import/Export Pydantic Schemas.
 
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # --- Card Schemas ---
@@ -56,8 +56,8 @@ class StudyQueueResponse(BaseModel):
 
 class CardAnswerRequest(BaseModel):
     card_id: int
-    rating: int  # 1=Again, 2=Hard, 3=Good, 4=Easy
-    time_taken_ms: int = 0
+    rating: int = Field(..., ge=1, le=4)  # 1=Again, 2=Hard, 3=Good, 4=Easy
+    time_taken_ms: int = Field(0, ge=0)
 
 
 class CardAnswerResponse(BaseModel):

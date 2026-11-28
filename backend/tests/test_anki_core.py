@@ -106,16 +106,17 @@ def test_sm2_review_card_and_lapses():
 
 
 def test_fsrs_scheduling():
-    """Test FSRS v4.5 stability and interval calculation."""
+    """Test FSRS-5 stability and interval calculation."""
     cfg = DeckConfigParams(fsrs_enabled=True, desired_retention=0.90)
     sched = FSRSScheduler(cfg)
 
     card = CardState(card_id=3, card_type=CardType.NEW, queue=CardQueue.NEW)
 
-    # First rating GOOD
-    res = sched.schedule(card, Rating.GOOD, 1000000, 100)
+    # First rating EASY graduates directly (GOOD would go through learning steps first)
+    res = sched.schedule(card, Rating.EASY, 1000000, 100)
     assert res.fsrs_stability is not None
     assert res.fsrs_difficulty is not None
+    assert res.card_type == CardType.REVIEW
     assert res.interval >= 1
     assert res.due == 100 + res.interval
 

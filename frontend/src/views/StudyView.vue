@@ -35,6 +35,9 @@
       </div>
     </header>
 
+    <!-- Notetype CSS (scoped to .anki-render) for cards shown with their original Anki template -->
+    <component :is="'style'" v-if="studyStore.currentCard && !cleanCard && scopedCardCss">{{ scopedCardCss }}</component>
+
     <!-- Loading State -->
     <div v-if="studyStore.isLoading" class="my-auto text-center py-24 text-outline">
       <span class="material-symbols-outlined animate-spin text-3xl text-primary mb-2">progress_activity</span>
@@ -218,7 +221,7 @@
               </template>
 
               <!-- Fallback to raw template if clean_data unavailable -->
-              <div v-else class="w-full flex flex-col items-center justify-center" v-html="studyStore.currentCard.rendered.front_html"></div>
+              <div v-else class="anki-render w-full" v-html="studyStore.currentCard.rendered.front_html"></div>
             </div>
 
             <!-- Bottom Subtext Tip -->
@@ -312,7 +315,7 @@
               </template>
 
               <!-- Fallback to raw template if clean_data unavailable -->
-              <div v-else class="w-full flex flex-col items-center justify-center" v-html="studyStore.currentCard.rendered.back_html"></div>
+              <div v-else class="anki-render w-full" v-html="studyStore.currentCard.rendered.back_html"></div>
             </div>
 
             <!-- Bottom Subtext Tip -->
@@ -344,7 +347,7 @@
         <div class="grid grid-cols-4 gap-2 sm:gap-3">
           <!-- Again (1) -->
           <button
-            @click="submitRating(1)"
+            :disabled="isSubmitting" @click="submitRating(1)"
             class="flex flex-col items-center justify-between p-2.5 sm:p-3 rounded-2xl bg-red-50 hover:bg-red-100/90 text-red-700 border-2 border-red-500 shadow-[0_3px_0_0_#dc2626] active:translate-y-[2px] active:shadow-none transition-all"
           >
             <div class="flex items-center justify-between w-full text-xs font-bold">
@@ -357,7 +360,7 @@
 
           <!-- Hard (2) -->
           <button
-            @click="submitRating(2)"
+            :disabled="isSubmitting" @click="submitRating(2)"
             class="flex flex-col items-center justify-between p-2.5 sm:p-3 rounded-2xl bg-amber-50 hover:bg-amber-100/90 text-amber-800 border-2 border-amber-500 shadow-[0_3px_0_0_#d97706] active:translate-y-[2px] active:shadow-none transition-all"
           >
             <div class="flex items-center justify-between w-full text-xs font-bold">
@@ -370,7 +373,7 @@
 
           <!-- Good (3) -->
           <button
-            @click="submitRating(3)"
+            :disabled="isSubmitting" @click="submitRating(3)"
             class="flex flex-col items-center justify-between p-2.5 sm:p-3 rounded-2xl bg-blue-50 hover:bg-blue-100/90 text-blue-700 border-2 border-blue-600 shadow-[0_3px_0_0_#2563eb] active:translate-y-[2px] active:shadow-none transition-all"
           >
             <div class="flex items-center justify-between w-full text-xs font-bold">
@@ -383,7 +386,7 @@
 
           <!-- Easy (4) -->
           <button
-            @click="submitRating(4)"
+            :disabled="isSubmitting" @click="submitRating(4)"
             class="flex flex-col items-center justify-between p-2.5 sm:p-3 rounded-2xl bg-emerald-50 hover:bg-emerald-100/90 text-emerald-800 border-2 border-emerald-500 shadow-[0_3px_0_0_#059669] active:translate-y-[2px] active:shadow-none transition-all"
           >
             <div class="flex items-center justify-between w-full text-xs font-bold">
@@ -402,6 +405,7 @@
           <span class="material-symbols-outlined text-sm">undo</span>
           <span>Lật lại mặt trước</span>
         </button>
+        <p v-if="submitError" class="text-center text-xs font-semibold text-red-600">{{ submitError }}</p>
       </div>
     </footer>
   </div>
@@ -411,6 +415,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { useStudyStore } from '../stores/study';
+import { scopeCss } from '../utils/scopeCss';
 
 const route = useRoute();
 const studyStore = useStudyStore();
@@ -432,6 +437,11 @@ const flingY = ref(0);
 
 // Clean card data shorthand
 const cleanCard = computed(() => studyStore.currentCard?.clean_data || null);
+const scopedCardCss = computed(() => scopeCss(studyStore.currentCard?.rendered.css || ''));
+
+// Answer submission state (prevents double-rating the same card)
+const isSubmitting = ref(false);
+const submitError = ref('');
 
 // Hint detection
 const hasHint = computed(() => {
@@ -544,15 +554,35 @@ function playAudio() {
   }
 }
 
-async function submitRating(rating: number) {
-  const timeTaken = Date.now() - startTime;
-  await studyStore.answerCard(rating, timeTaken);
-  isFlipped.value = false;
-  showHint.value = false;
+function resetCardPosition() {
   dragDeltaX.value = 0;
   dragDeltaY.value = 0;
+  flingX.value = 0;
+  flingY.value = 0;
   isFlinging.value = false;
-  startTime = Date.now();
+}
+
+async function submitRating(rating: number) {
+  // Only after the answer was shown, and only once per card
+  if (isSubmitting.value || !isFlipped.value || !studyStore.currentCard) {
+    resetCardPosition();
+    return;
+  }
+  isSubmitting.value = true;
+  submitError.value = '';
+  const timeTaken = Date.now() - startTime;
+  try {
+    await studyStore.answerCard(rating, timeTaken);
+    isFlipped.value = false;
+    showHint.value = false;
+    startTime = Date.now();
+  } catch (err) {
+    console.error(err);
+    submitError.value = 'Không gửi được đánh giá, vui lòng thử lại.';
+  } finally {
+    resetCardPosition();
+    isSubmitting.value = false;
+  }
 }
 
 // Pointer / Touch Gesture Handlers
@@ -583,6 +613,13 @@ async function handlePointerUp(e: PointerEvent) {
   // If minimal movement (< 10px), tap to flip
   if (dist < 10) {
     toggleFlip();
+    return;
+  }
+
+  // Rating requires seeing the answer first: a swipe on the front side just flips the card
+  if (dist > 90 && (!isFlipped.value || isSubmitting.value)) {
+    resetCardPosition();
+    if (!isFlipped.value) toggleFlip();
     return;
   }
 
@@ -625,14 +662,14 @@ function handleKeydown(e: KeyboardEvent) {
 
   if (e.code === 'Space') {
     e.preventDefault();
-    toggleFlip();
+    if (!e.repeat) toggleFlip();
   } else if (e.key === 'r' || e.key === 'R') {
     e.preventDefault();
     playAudio();
   } else if (e.key === 'h' || e.key === 'H') {
     e.preventDefault();
     showHint.value = !showHint.value;
-  } else if (isFlipped.value) {
+  } else if (isFlipped.value && !e.repeat) {
     if (e.key === '1') {
       e.preventDefault();
       submitRating(1);
@@ -657,6 +694,35 @@ function handleKeydown(e: KeyboardEvent) {
 .preserve-3d {
   transform-style: preserve-3d;
 }
+/* Cards rendered from their original Anki template (cloze, type-in, custom layouts) */
+.anki-render {
+  text-align: center;
+  font-size: 1.25rem;
+  line-height: 1.6;
+}
+.anki-render :deep(.cloze) {
+  font-weight: 800;
+  color: #2563eb;
+}
+.anki-render :deep(.anki-typeans) {
+  margin-top: 0.75rem;
+  width: 100%;
+  max-width: 24rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgb(0 0 0 / 0.2);
+  font-size: 1rem;
+}
+.anki-render :deep(.anki-typeans-answer code) {
+  font-family: inherit;
+  font-weight: 700;
+  color: #059669;
+}
+.anki-render :deep(img) {
+  max-width: 100%;
+  margin: 0 auto;
+}
+
 .flashcard-face {
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
